@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "copilot-token-tracker"
+dynamic = ["version"]
+description = "Global token tracker for GitHub Copilot CLI sessions"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = []
+authors = [{ name = "J-Bax" }]
+keywords = ["copilot", "cli", "tokens", "telemetry", "dashboard", "sqlite"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2.2",
+    "twine>=6.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/J-Bax/copilot-token-tracker"
+Repository = "https://github.com/J-Bax/copilot-token-tracker"
+Issues = "https://github.com/J-Bax/copilot-token-tracker/issues"
+
+[project.scripts]
+tokentracker = "tokentracker.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "tokentracker.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["tokentracker*"]
+
