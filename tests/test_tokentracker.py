@@ -112,7 +112,7 @@ class TokenTrackerTests(unittest.TestCase):
         )
 
     def test_sync_imports_completed_sessions_and_ignores_incomplete_ones(self) -> None:
-        result = sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=True)
+        result = sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=True, sources={"cli"})
 
         self.assertEqual(result.session_files_seen, 2)
         self.assertEqual(result.imported_sessions, 1)
@@ -131,7 +131,11 @@ class TokenTrackerTests(unittest.TestCase):
                     total_premium_requests,
                     lines_added,
                     lines_removed,
-                    duration_seconds
+                    duration_seconds,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_read_tokens,
+                    total_cache_write_tokens
                 FROM sessions
                 """
             ).fetchone()
@@ -144,6 +148,15 @@ class TokenTrackerTests(unittest.TestCase):
             self.assertEqual(row[5], 15)
             self.assertEqual(row[6], 4)
             self.assertEqual(row[7], 300)
+            self.assertEqual(row[8], 1200)   # input_tokens
+            self.assertEqual(row[9], 350)    # output_tokens
+            self.assertEqual(row[10], 50)    # cache_read_tokens
+            self.assertEqual(row[11], 10)    # cache_write_tokens
+            self.assertEqual(
+                row[8] + row[9] + row[10] + row[11],
+                row[3],
+                "input + output + cache_read + cache_write must equal total_tokens",
+            )
 
             model_row = connection.execute(
                 """
@@ -158,8 +171,8 @@ class TokenTrackerTests(unittest.TestCase):
             self.assertAlmostEqual(model_row[3], 2.5)
 
     def test_sync_is_idempotent_for_unchanged_sessions(self) -> None:
-        first = sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=False)
-        second = sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=False)
+        first = sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=False, sources={"cli"})
+        second = sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=False, sources={"cli"})
 
         self.assertEqual(first.imported_sessions, 1)
         self.assertEqual(second.imported_sessions, 0)
@@ -188,7 +201,7 @@ class TokenTrackerTests(unittest.TestCase):
         (self.copilot_home / "hooks").mkdir(parents=True, exist_ok=True)
         (self.copilot_home / "hooks" / "copilot-token-tracker.json").write_text("{}", encoding="utf-8")
         (self.copilot_home / "hooks" / "copilot-token-tracker-sync.ps1").write_text("echo ok", encoding="utf-8")
-        sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=True)
+        sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=True, sources={"cli"})
 
         stdout = StringIO()
         with redirect_stdout(stdout):
@@ -281,6 +294,7 @@ class TokenTrackerTests(unittest.TestCase):
                     {
                         "copilot_home": self.copilot_home,
                         "data_dir": self.data_dir,
+                        "sources": "cli",
                     },
                 )()
             )
@@ -357,7 +371,7 @@ class TokenTrackerTests(unittest.TestCase):
         long_repo = "octo/" + ("very-long-repository-name-" * 6).rstrip("-")
         self._write_completed_session("fixture-session-long", long_repo)
 
-        sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=True)
+        sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=True, sources={"cli"})
         html = (self.data_dir / "dashboard.html").read_text(encoding="utf-8")
         project_page = project_dashboard_path(self.data_dir / "dashboard.html", long_repo)
         project_html = project_page.read_text(encoding="utf-8")
@@ -389,6 +403,7 @@ class TokenTrackerTests(unittest.TestCase):
                         "copilot_home": self.copilot_home,
                         "data_dir": self.data_dir,
                         "scope": "octo/demo",
+                        "sources": "cli",
                     },
                 )()
             )
@@ -398,6 +413,265 @@ class TokenTrackerTests(unittest.TestCase):
         self.assertIn("Scope: octo/demo", output)
         self.assertIn("Sessions: 1", output)
         self.assertIn("Tokens: 1,610", output)
+
+
+class VSCodeImporterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="tokentracker-vscode-tests-"))
+        self.copilot_home = self.temp_dir / ".copilot"
+        self.data_dir = self.temp_dir / "tracker-data"
+        self.vscode_storage = self.temp_dir / "vscode-storage"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _create_mock_vscode_db(
+        self,
+        workspace_hash: str = "abc123",
+        sessions: dict[str, dict] | None = None,
+        history_entries: list[dict] | None = None,
+    ) -> Path:
+        """Create a mock state.vscdb with Copilot Chat session data."""
+        workspace_dir = self.vscode_storage / workspace_hash
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        db_path = workspace_dir / "state.vscdb"
+
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+
+        if sessions is None:
+            sessions = {
+                "test-session-1": {
+                    "sessionId": "test-session-1",
+                    "title": "Implementing authentication",
+                    "lastMessageDate": 1772920800000,
+                    "isImported": False,
+                    "initialLocation": "panel",
+                    "isEmpty": False,
+                    "timing": {
+                        "startTime": 1772920500000,
+                        "endTime": 1772920800000,
+                    },
+                },
+            }
+
+        index = {"version": 1, "entries": sessions}
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES (?, ?)",
+            ("chat.ChatSessionStore.index", json.dumps(index)),
+        )
+
+        if history_entries is None:
+            history_entries = [
+                {
+                    "inputText": "How do I implement JWT authentication in Python?",
+                    "selectedModel": {
+                        "identifier": "copilot/claude-sonnet-4.5",
+                        "metadata": {
+                            "id": "claude-sonnet-4.5",
+                            "name": "Claude Sonnet 4.5",
+                            "multiplier": "1x",
+                            "maxInputTokens": 200000,
+                            "maxOutputTokens": 16384,
+                        },
+                    },
+                },
+                {
+                    "inputText": "Now add refresh token rotation to the implementation",
+                    "selectedModel": {
+                        "identifier": "copilot/claude-sonnet-4.5",
+                        "metadata": {
+                            "id": "claude-sonnet-4.5",
+                            "name": "Claude Sonnet 4.5",
+                        },
+                    },
+                },
+            ]
+
+        history_data = {"history": {"copilot": history_entries}}
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES (?, ?)",
+            ("memento/interactive-session", json.dumps(history_data)),
+        )
+
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_discover_vscode_db_paths_finds_state_vscdb(self) -> None:
+        from tokentracker.vscode_importer import discover_vscode_db_paths
+
+        self._create_mock_vscode_db("workspace-1")
+        self._create_mock_vscode_db("workspace-2")
+
+        paths = discover_vscode_db_paths(self.vscode_storage)
+        self.assertEqual(len(paths), 2)
+        for path in paths:
+            self.assertTrue(path.name == "state.vscdb")
+
+    def test_discover_vscode_db_paths_returns_empty_for_missing_dir(self) -> None:
+        from tokentracker.vscode_importer import discover_vscode_db_paths
+
+        paths = discover_vscode_db_paths(self.temp_dir / "nonexistent")
+        self.assertEqual(paths, [])
+
+    def test_parse_vscode_sessions_extracts_session_metadata(self) -> None:
+        from tokentracker.vscode_importer import parse_vscode_sessions
+
+        db_path = self._create_mock_vscode_db()
+        sessions = list(parse_vscode_sessions(db_path))
+
+        self.assertEqual(len(sessions), 1)
+        session = sessions[0]
+        self.assertEqual(session.session_id, "vscode-chat:test-session-1")
+        self.assertEqual(session.source, "vscode-chat")
+        self.assertTrue(session.is_estimated)
+        self.assertIsNotNone(session.started_at)
+        self.assertIsNotNone(session.shutdown_at)
+        self.assertEqual(session.duration_seconds, 300)
+
+    def test_parse_vscode_sessions_estimates_tokens(self) -> None:
+        from tokentracker.vscode_importer import parse_vscode_sessions
+
+        db_path = self._create_mock_vscode_db()
+        sessions = list(parse_vscode_sessions(db_path))
+
+        session = sessions[0]
+        self.assertGreater(session.total_tokens, 0)
+        self.assertGreater(session.total_input_tokens, 0)
+        self.assertGreater(session.total_output_tokens, 0)
+
+    def test_parse_vscode_sessions_extracts_model_name(self) -> None:
+        from tokentracker.vscode_importer import parse_vscode_sessions
+
+        db_path = self._create_mock_vscode_db()
+        sessions = list(parse_vscode_sessions(db_path))
+
+        session = sessions[0]
+        self.assertEqual(session.selected_model, "claude-sonnet-4.5")
+        self.assertEqual(len(session.models), 1)
+        self.assertEqual(session.models[0].model_name, "claude-sonnet-4.5")
+
+    def test_parse_vscode_sessions_skips_empty_sessions(self) -> None:
+        from tokentracker.vscode_importer import parse_vscode_sessions
+
+        db_path = self._create_mock_vscode_db(
+            sessions={
+                "empty-session": {
+                    "sessionId": "empty-session",
+                    "title": "",
+                    "lastMessageDate": 1772920800000,
+                    "isEmpty": True,
+                    "initialLocation": "panel",
+                }
+            }
+        )
+        sessions = list(parse_vscode_sessions(db_path))
+        self.assertEqual(len(sessions), 0)
+
+    def test_sync_imports_vscode_sessions_into_database(self) -> None:
+        # Set up CLI fixture
+        cli_session_dir = self.copilot_home / "session-state" / "cli-session-1"
+        cli_session_dir.mkdir(parents=True, exist_ok=True)
+        repo_root = Path(__file__).resolve().parent
+        shutil.copy(
+            repo_root / "fixtures" / "completed-session" / "events.jsonl",
+            cli_session_dir / "events.jsonl",
+        )
+
+        # Set up VS Code fixture
+        self._create_mock_vscode_db()
+
+        result = sync_sessions(
+            copilot_home=self.copilot_home,
+            data_dir=self.data_dir,
+            regenerate_dashboard=True,
+            sources={"cli", "vscode"},
+            vscode_storage_root=self.vscode_storage,
+        )
+
+        self.assertEqual(result.imported_sessions, 1)
+        self.assertEqual(result.vscode_imported, 1)
+
+        with sqlite3.connect(self.data_dir / "token-tracker.db") as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT session_id, source, is_estimated FROM sessions ORDER BY source"
+            ).fetchall()
+            sources = {row["source"] for row in rows}
+            self.assertIn("cli", sources)
+            self.assertIn("vscode-chat", sources)
+
+            vscode_row = next(r for r in rows if r["source"] == "vscode-chat")
+            self.assertEqual(vscode_row["is_estimated"], 1)
+
+            cli_row = next(r for r in rows if r["source"] == "cli")
+            self.assertEqual(cli_row["is_estimated"], 0)
+
+    def test_sync_vscode_only_source(self) -> None:
+        self._create_mock_vscode_db()
+
+        result = sync_sessions(
+            copilot_home=self.copilot_home,
+            data_dir=self.data_dir,
+            regenerate_dashboard=False,
+            sources={"vscode"},
+            vscode_storage_root=self.vscode_storage,
+        )
+
+        self.assertEqual(result.session_files_seen, 0)
+        self.assertEqual(result.vscode_imported, 1)
+
+    def test_sync_vscode_is_idempotent(self) -> None:
+        self._create_mock_vscode_db()
+
+        first = sync_sessions(
+            copilot_home=self.copilot_home,
+            data_dir=self.data_dir,
+            regenerate_dashboard=False,
+            sources={"vscode"},
+            vscode_storage_root=self.vscode_storage,
+        )
+        second = sync_sessions(
+            copilot_home=self.copilot_home,
+            data_dir=self.data_dir,
+            regenerate_dashboard=False,
+            sources={"vscode"},
+            vscode_storage_root=self.vscode_storage,
+        )
+
+        self.assertEqual(first.vscode_imported, 1)
+        self.assertEqual(second.vscode_imported, 0)
+        self.assertEqual(second.vscode_skipped, 1)
+
+    def test_source_breakdown_query_returns_multiple_sources(self) -> None:
+        from tokentracker.storage import connect, fetch_source_breakdown
+
+        # Set up CLI fixture
+        cli_session_dir = self.copilot_home / "session-state" / "cli-session-1"
+        cli_session_dir.mkdir(parents=True, exist_ok=True)
+        repo_root = Path(__file__).resolve().parent
+        shutil.copy(
+            repo_root / "fixtures" / "completed-session" / "events.jsonl",
+            cli_session_dir / "events.jsonl",
+        )
+
+        # Set up VS Code fixture
+        self._create_mock_vscode_db()
+
+        sync_sessions(
+            copilot_home=self.copilot_home,
+            data_dir=self.data_dir,
+            regenerate_dashboard=False,
+            sources={"cli", "vscode"},
+            vscode_storage_root=self.vscode_storage,
+        )
+
+        with connect(self.data_dir / "token-tracker.db") as conn:
+            rows = fetch_source_breakdown(conn)
+            sources = {row["source"] for row in rows}
+            self.assertIn("cli", sources)
+            self.assertIn("vscode-chat", sources)
 
 
 if __name__ == "__main__":

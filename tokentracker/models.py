@@ -48,6 +48,8 @@ class SessionMetrics:
     models: list[ModelMetrics] = field(default_factory=list)
     raw_start_json: str | None = None
     raw_shutdown_json: str | None = None
+    source: str = "cli"
+    is_estimated: bool = False
 
     @property
     def files_modified_count(self) -> int:
@@ -87,4 +89,8 @@ class SyncResult:
     incomplete_sessions: int
     database_path: Path
     dashboard_path: Path | None = None
+    vscode_sessions_seen: int = 0
+    vscode_imported: int = 0
+    vscode_updated: int = 0
+    vscode_skipped: int = 0
 

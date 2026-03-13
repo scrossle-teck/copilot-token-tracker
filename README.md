@@ -1,13 +1,32 @@
-# Copilot CLI Token Tracker
+# Copilot Token Tracker
 
 Copilot CLI already exposes session-scoped usage with `/usage`, current context usage with `/context`, and writes per-session telemetry to `~/.copilot/session-state/<session-id>/events.jsonl`. What it does not currently provide is a built-in local dashboard that aggregates token usage across all of your sessions.
 
 This project fills that gap for Windows-first setups by:
 
 - scanning completed `session.shutdown` events across `~/.copilot/session-state`
+- importing VS Code Copilot Chat sessions from workspace storage
 - normalizing them into a local SQLite database
 - generating a self-contained HTML dashboard
 - installing personal hooks in `~/.copilot/hooks` so sync runs automatically across local Copilot CLI sessions
+
+## Data sources
+
+### Copilot CLI (actual metrics)
+
+CLI sessions are imported from `~/.copilot/session-state/*/events.jsonl` with server-reported token counts, premium request costs, and code change stats. This is the highest-fidelity data source.
+
+### VS Code Copilot Chat (estimated metrics)
+
+VS Code Chat sessions are imported from `%APPDATA%\Code\User\workspaceStorage\*\state.vscdb`. Because VS Code does not persist actual per-request token counts locally, all VS Code token values are **estimated** from message text length (~0.25 tokens per character). Estimated data is clearly labeled in the dashboard and terminal summary.
+
+**Limitations of VS Code tracking:**
+
+- Token counts are approximate (can be 20-40% off actual usage)
+- Inline completions and ghost text are not tracked (only chat sessions)
+- Premium request costs are not available (shown as 0)
+- Code change stats are not available from VS Code sessions
+- Cache read/write tokens are not available
 
 ## What the tracker stores
 
@@ -93,6 +112,7 @@ Useful options:
 - `--data-dir PATH`
 - `--skip-dashboard`
 - `--quiet`
+- `--sources cli,vscode` (default: both; use `--sources cli` for CLI only)
 
 ### Print a terminal summary
 
@@ -239,8 +259,9 @@ Built into Copilot CLI today:
 
 Added by this project:
 
-- cross-session aggregation
-- SQLite history
-- HTML dashboard
+- cross-session aggregation (CLI and VS Code Chat)
+- SQLite history with source tracking
+- HTML dashboard with source breakdown
 - automatic personal-hook based syncing
+- estimated VS Code token usage from local workspace storage
 

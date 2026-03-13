@@ -21,9 +21,11 @@ from tokentracker.storage import (
     connect,
     existing_session_mtimes,
     fetch_model_breakdown,
+    fetch_source_breakdown,
     fetch_summary,
     upsert_session,
 )
+from tokentracker.vscode_importer import iter_all_vscode_sessions
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,25 +40,28 @@ def main(argv: list[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tokentracker",
-        description="Track GitHub Copilot CLI usage across sessions.",
+        description="Track GitHub Copilot usage across CLI and VS Code sessions.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
-    sync_parser = subparsers.add_parser("sync", help="Import completed Copilot CLI sessions into SQLite.")
+    sync_parser = subparsers.add_parser("sync", help="Import completed Copilot sessions into SQLite.")
     _add_common_paths(sync_parser)
     sync_parser.add_argument("--skip-dashboard", action="store_true", help="Skip dashboard regeneration.")
     sync_parser.add_argument("--quiet", action="store_true", help="Suppress sync output.")
+    _add_sources_flag(sync_parser)
     sync_parser.set_defaults(handler=handle_sync)
 
     summary_parser = subparsers.add_parser("summary", help="Print an aggregated summary.")
     _add_common_paths(summary_parser)
     _add_scope_filter(summary_parser)
+    _add_sources_flag(summary_parser)
     summary_parser.set_defaults(handler=handle_summary)
 
     dashboard_parser = subparsers.add_parser("dashboard", help="Regenerate the HTML dashboard.")
     _add_common_paths(dashboard_parser)
     _add_scope_filter(dashboard_parser)
+    _add_sources_flag(dashboard_parser)
     dashboard_parser.add_argument("--open", action="store_true", help="Open the generated dashboard in the default browser.")
     dashboard_parser.set_defaults(handler=handle_dashboard)
 
@@ -106,11 +111,29 @@ def _add_scope_filter(parser: argparse.ArgumentParser) -> None:
     )
 
 
+_ALL_SOURCES = ("cli", "vscode")
+
+
+def _add_sources_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--sources",
+        type=str,
+        default=",".join(_ALL_SOURCES),
+        help="Comma-separated list of sources to import. Options: cli, vscode. Default: cli,vscode.",
+    )
+
+
+def _parse_sources(raw: str) -> set[str]:
+    return {s.strip().lower() for s in raw.split(",") if s.strip()}
+
+
 def handle_sync(args: argparse.Namespace) -> int:
+    sources = _parse_sources(getattr(args, "sources", ",".join(_ALL_SOURCES)))
     result = sync_sessions(
         copilot_home=args.copilot_home,
         data_dir=_data_dir_for(args.copilot_home, args.data_dir),
         regenerate_dashboard=not args.skip_dashboard,
+        sources=sources,
     )
     if not args.quiet:
         _print_sync_result(result)
@@ -120,12 +143,14 @@ def handle_sync(args: argparse.Namespace) -> int:
 def handle_summary(args: argparse.Namespace) -> int:
     data_dir = _data_dir_for(args.copilot_home, args.data_dir)
     scope = getattr(args, "scope", None)
-    result = sync_sessions(copilot_home=args.copilot_home, data_dir=data_dir, regenerate_dashboard=True)
+    sources = _parse_sources(getattr(args, "sources", ",".join(_ALL_SOURCES)))
+    result = sync_sessions(copilot_home=args.copilot_home, data_dir=data_dir, regenerate_dashboard=True, sources=sources)
     pricing = load_pricing(data_dir)
     _print_sync_result(result, heading="Sync summary")
     with connect(result.database_path) as connection:
         summary = fetch_summary(connection, scope=scope)
         model_rows = fetch_model_breakdown(connection, scope=scope)
+        source_rows = fetch_source_breakdown(connection, scope=scope)
     estimated_cost = estimate_total_currency_amount(model_rows, pricing)
     print()
     print("Totals")
@@ -134,11 +159,21 @@ def handle_summary(args: argparse.Namespace) -> int:
     print(f"  Sessions: {_format_int(summary['session_count'])}")
     print(f"  Requests: {_format_int(summary['total_requests'])}")
     print(f"  Tokens: {_format_int(summary['total_tokens'])}")
+    print(f"    Input: {_format_int(summary['total_input_tokens'])}")
+    print(f"    Output: {_format_int(summary['total_output_tokens'])}")
+    print(f"    Cache read: {_format_int(summary['total_cache_read_tokens'])}")
+    print(f"    Cache write: {_format_int(summary['total_cache_write_tokens'])}")
     print(f"  Premium request units: {_format_decimal(summary['total_premium_requests'])}")
     print(f"  Estimated cost ({pricing_currency(pricing)}): {_format_currency(estimated_cost, pricing_currency(pricing))}")
     print(f"  Cost mode: {describe_cost_strategy(pricing)}")
     print(f"  Session duration: {_format_duration(summary['duration_seconds'])}")
     print(f"  Code changes: {_format_int(summary['lines_added'])} added / {_format_int(summary['lines_removed'])} removed")
+    if source_rows:
+        print("  By source:")
+        for srow in source_rows:
+            label = _source_label(str(srow["source"]))
+            est_note = " (estimated)" if int(srow["estimated_count"]) > 0 else ""
+            print(f"    {label}: {_format_int(srow['session_count'])} sessions, {_format_int(srow['total_tokens'])} tokens{est_note}")
     if result.dashboard_path is not None:
         print(f"  Dashboard: {result.dashboard_path}")
     return 0
@@ -147,7 +182,8 @@ def handle_summary(args: argparse.Namespace) -> int:
 def handle_dashboard(args: argparse.Namespace) -> int:
     data_dir = _data_dir_for(args.copilot_home, args.data_dir)
     scope = getattr(args, "scope", None)
-    result = sync_sessions(copilot_home=args.copilot_home, data_dir=data_dir, regenerate_dashboard=True)
+    sources = _parse_sources(getattr(args, "sources", ",".join(_ALL_SOURCES)))
+    result = sync_sessions(copilot_home=args.copilot_home, data_dir=data_dir, regenerate_dashboard=True, sources=sources)
     if result.dashboard_path is None:
         raise RuntimeError("Dashboard path was not generated.")
     dashboard_path = result.dashboard_path
@@ -283,35 +319,66 @@ def handle_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
-def sync_sessions(copilot_home: Path, data_dir: Path, regenerate_dashboard: bool) -> SyncResult:
+def sync_sessions(
+    copilot_home: Path,
+    data_dir: Path,
+    regenerate_dashboard: bool,
+    sources: set[str] | None = None,
+    vscode_storage_root: Path | None = None,
+) -> SyncResult:
+    if sources is None:
+        sources = set(_ALL_SOURCES)
     data_dir.mkdir(parents=True, exist_ok=True)
     ensure_pricing_file(data_dir)
     database_path = data_dir / "token-tracker.db"
     dashboard_path = data_dir / "dashboard.html" if regenerate_dashboard else None
 
-    session_files = discover_session_files(copilot_home)
     imported = 0
     updated = 0
     skipped = 0
     incomplete = 0
+    session_files: list[Path] = []
+
+    vscode_seen = 0
+    vscode_imported = 0
+    vscode_updated = 0
+    vscode_skipped = 0
 
     with connect(database_path) as connection:
         cached_mtimes = existing_session_mtimes(connection)
-        for session_file in session_files:
-            session_id = session_file.parent.name
-            current_mtime = session_file.stat().st_mtime_ns
-            if cached_mtimes.get(session_id) == current_mtime:
-                skipped += 1
-                continue
-            session = parse_completed_session(session_file)
-            if session is None:
-                incomplete += 1
-                continue
-            status = upsert_session(connection, session)
-            if status == "inserted":
-                imported += 1
-            else:
-                updated += 1
+
+        # --- CLI sessions ---
+        if "cli" in sources:
+            session_files = discover_session_files(copilot_home)
+            for session_file in session_files:
+                session_id = session_file.parent.name
+                current_mtime = session_file.stat().st_mtime_ns
+                if cached_mtimes.get(session_id) == current_mtime:
+                    skipped += 1
+                    continue
+                session = parse_completed_session(session_file)
+                if session is None:
+                    incomplete += 1
+                    continue
+                status = upsert_session(connection, session)
+                if status == "inserted":
+                    imported += 1
+                else:
+                    updated += 1
+
+        # --- VS Code chat sessions ---
+        if "vscode" in sources:
+            for session in iter_all_vscode_sessions(vscode_storage_root):
+                vscode_seen += 1
+                if cached_mtimes.get(session.session_id) == session.source_mtime_ns:
+                    vscode_skipped += 1
+                    continue
+                status = upsert_session(connection, session)
+                if status == "inserted":
+                    vscode_imported += 1
+                else:
+                    vscode_updated += 1
+
         connection.commit()
 
         if regenerate_dashboard:
@@ -327,6 +394,10 @@ def sync_sessions(copilot_home: Path, data_dir: Path, regenerate_dashboard: bool
         incomplete_sessions=incomplete,
         database_path=database_path,
         dashboard_path=dashboard_path,
+        vscode_sessions_seen=vscode_seen,
+        vscode_imported=vscode_imported,
+        vscode_updated=vscode_updated,
+        vscode_skipped=vscode_skipped,
     )
 
 
@@ -367,14 +438,24 @@ def _status(exists: bool) -> str:
 
 def _print_sync_result(result: SyncResult, heading: str = "Sync complete") -> None:
     print(heading)
-    print(f"  Session files seen: {_format_int(result.session_files_seen)}")
-    print(f"  Imported: {_format_int(result.imported_sessions)}")
-    print(f"  Updated: {_format_int(result.updated_sessions)}")
-    print(f"  Skipped unchanged: {_format_int(result.skipped_sessions)}")
-    print(f"  Incomplete sessions: {_format_int(result.incomplete_sessions)}")
+    print(f"  CLI session files seen: {_format_int(result.session_files_seen)}")
+    print(f"  CLI imported: {_format_int(result.imported_sessions)}")
+    print(f"  CLI updated: {_format_int(result.updated_sessions)}")
+    print(f"  CLI skipped unchanged: {_format_int(result.skipped_sessions)}")
+    print(f"  CLI incomplete sessions: {_format_int(result.incomplete_sessions)}")
+    if result.vscode_sessions_seen > 0 or result.vscode_imported > 0:
+        print(f"  VS Code sessions seen: {_format_int(result.vscode_sessions_seen)}")
+        print(f"  VS Code imported: {_format_int(result.vscode_imported)}")
+        print(f"  VS Code updated: {_format_int(result.vscode_updated)}")
+        print(f"  VS Code skipped unchanged: {_format_int(result.vscode_skipped)}")
     print(f"  Database: {result.database_path}")
     if result.dashboard_path is not None:
         print(f"  Dashboard: {result.dashboard_path}")
+
+
+def _source_label(source: str) -> str:
+    labels = {"cli": "Copilot CLI", "vscode-chat": "VS Code Chat (estimated)"}
+    return labels.get(source, source)
 
 
 def _format_int(value: object) -> str:

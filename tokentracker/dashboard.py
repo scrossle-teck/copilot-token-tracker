@@ -21,6 +21,7 @@ from tokentracker.storage import (
     fetch_recent_sessions,
     fetch_repo_breakdown,
     fetch_session_cost_rows,
+    fetch_source_breakdown,
     fetch_summary,
 )
 
@@ -79,6 +80,7 @@ def _render_dashboard_html(
     daily_rows = fetch_daily_breakdown(connection, scope=scope)
     recent_rows = fetch_recent_sessions(connection, scope=scope)
     cost_rows = fetch_session_cost_rows(connection, scope=scope)
+    source_rows = fetch_source_breakdown(connection, scope=scope)
 
     currency = pricing_currency(pricing)
     cost_strategy = describe_cost_strategy(pricing)
@@ -86,7 +88,7 @@ def _render_dashboard_html(
     daily_costs = _group_estimated_costs(cost_rows, "day", pricing)
     repo_costs = _group_estimated_costs(cost_rows, "scope", pricing)
     recent_costs = _group_estimated_costs(cost_rows, "session_id", pricing)
-    page_title = "Copilot CLI Token Tracker" if scope is None else f"Copilot CLI Token Tracker - {scope}"
+    page_title = "Copilot Token Tracker" if scope is None else f"Copilot Token Tracker - {scope}"
     scope_notice = (
         ""
         if scope is None
@@ -232,14 +234,14 @@ def _render_dashboard_html(
   <main>
     <header>
       <h1>{escape(page_title)}</h1>
-      <p>Aggregated from completed <code>session.shutdown</code> events in <code>~/.copilot/session-state/*/events.jsonl</code>.</p>
+      <p>Aggregated from Copilot CLI sessions and VS Code Chat sessions.</p>
       {scope_notice}
       {overview_link}
       <p class="meta">Generated {escape(_now_iso())}</p>
     </header>
 
     <section class="notice">
-      <p>This dashboard tracks completed local sessions only. Active sessions are imported after they emit a <code>session.shutdown</code> event. Personal hooks sync at both session start and session end, so a missed shutdown is backfilled on the next run.</p>
+      <p>This dashboard tracks completed Copilot CLI sessions and VS Code Chat sessions. CLI sessions are imported from <code>session.shutdown</code> events. VS Code Chat sessions are imported from workspace storage with <strong>estimated</strong> token counts (actual usage is not available locally).</p>
       <p>Older Copilot CLI session folders may still exist before these totals begin. Versions before <code>0.0.422</code> did not persist the completed-session <code>session.shutdown</code> usage summary this tracker relies on, so those earlier sessions cannot be backfilled into token or cost totals.</p>
       <p>Estimated cost mode: <strong>{escape(cost_strategy)}</strong>. Edit <code>pricing.json</code> in this tracker data directory to set per-model token pricing and/or a premium-request conversion rate.</p>
     </section>
@@ -253,6 +255,8 @@ def _render_dashboard_html(
       {_card("Code changes", f"{_format_int(summary['lines_added'])} added / {_format_int(summary['lines_removed'])} removed")}
       {_card("Input tokens", _format_int(summary["total_input_tokens"]))}
       {_card("Output tokens", _format_int(summary["total_output_tokens"]))}
+      {_card("Cache read tokens", _format_int(summary["total_cache_read_tokens"]))}
+      {_card("Cache write tokens", _format_int(summary["total_cache_write_tokens"]))}
       {_card(f"Estimated cost ({currency})", _format_currency(total_cost, currency))}
     </section>
 
@@ -330,6 +334,7 @@ def _render_dashboard_html(
             <thead>
               <tr>
                 <th class="nowrap">Start</th>
+                <th>Source</th>
                 <th>Scope</th>
                 <th>Model</th>
                 <th class="numeric">Tokens</th>
@@ -344,6 +349,8 @@ def _render_dashboard_html(
         </div>
       </section>
     </div>
+
+    {_source_section(source_rows)}
   </main>
 </body>
 </html>
@@ -425,13 +432,14 @@ def _repo_rows(
 
 def _recent_rows(rows: list[Row], recent_costs: dict[str, float], currency: str) -> str:
     if not rows:
-        return _empty_row(6, "No recent completed sessions available yet.")
+        return _empty_row(7, "No recent completed sessions available yet.")
     return "".join(
         "<tr>"
         f"<td class=\"nowrap\">{escape(_trim_timestamp(row['started_at'] or row['shutdown_at']))}</td>"
+        f"<td class=\"nowrap\">{escape(_source_label(row['source']))}</td>"
         f"<td class=\"wrap-cell\">{escape(str(row['scope']))}</td>"
         f"<td class=\"wrap-cell\">{escape(str(row['current_model'] or '<unknown>'))}</td>"
-        f"<td class=\"numeric\">{_format_int(row['total_tokens'])}</td>"
+        f"<td class=\"numeric\">{_format_int(row['total_tokens'])}{_estimated_badge(row['is_estimated'])}</td>"
         f"<td class=\"numeric\">{_format_decimal(row['total_premium_requests'])}</td>"
         f"<td class=\"numeric\">{_format_currency(recent_costs.get(str(row['session_id'])), currency)}</td>"
         "</tr>"
@@ -505,6 +513,56 @@ def _format_currency(value: float | None, currency: str = "USD") -> str:
 
 def _trim_timestamp(value: str) -> str:
     return value.replace("T", " ").replace("Z", "")
+
+
+def _source_label(source: object) -> str:
+    labels = {"cli": "CLI", "vscode-chat": "VS Code"}
+    return labels.get(str(source), str(source))
+
+
+def _estimated_badge(is_estimated: object) -> str:
+    if int(is_estimated or 0):
+        return ' <span style="font-size:10px;color:var(--muted)">(est.)</span>'
+    return ""
+
+
+def _source_section(source_rows: list[Row]) -> str:
+    if len(source_rows) <= 1:
+        return ""
+    rendered: list[str] = []
+    for row in source_rows:
+        label = _source_label(row["source"])
+        est = int(row["estimated_count"] or 0)
+        note = " (estimated)" if est > 0 else ""
+        rendered.append(
+            "<tr>"
+            f"<td>{escape(label)}{escape(note)}</td>"
+            f"<td class=\"numeric\">{_format_int(row['session_count'])}</td>"
+            f"<td class=\"numeric\">{_format_int(row['total_requests'])}</td>"
+            f"<td class=\"numeric\">{_format_int(row['total_tokens'])}</td>"
+            f"<td class=\"numeric\">{_format_decimal(row['total_premium_requests'])}</td>"
+            "</tr>"
+        )
+    return f"""
+    <section class="panel" style="margin-bottom:20px">
+      <h2>By source</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th class="numeric">Sessions</th>
+              <th class="numeric">Requests</th>
+              <th class="numeric">Tokens</th>
+              <th class="numeric">Premium units</th>
+            </tr>
+          </thead>
+          <tbody>
+            {"".join(rendered)}
+          </tbody>
+        </table>
+      </div>
+    </section>"""
 
 
 def _scope_slug(scope: str) -> str:

@@ -59,7 +59,9 @@ def _initialize_schema(connection: sqlite3.Connection) -> None:
             files_modified_json TEXT NOT NULL,
             raw_start_json TEXT,
             raw_shutdown_json TEXT NOT NULL,
-            imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            source TEXT NOT NULL DEFAULT 'cli',
+            is_estimated INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS session_models (
@@ -77,6 +79,18 @@ def _initialize_schema(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    _migrate_add_source_columns(connection)
+
+
+def _migrate_add_source_columns(connection: sqlite3.Connection) -> None:
+    existing = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+    }
+    if "source" not in existing:
+        connection.execute("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'cli'")
+    if "is_estimated" not in existing:
+        connection.execute("ALTER TABLE sessions ADD COLUMN is_estimated INTEGER NOT NULL DEFAULT 0")
 
 
 def existing_session_mtimes(connection: sqlite3.Connection) -> dict[str, int]:
@@ -126,8 +140,10 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
             files_modified_json,
             raw_start_json,
             raw_shutdown_json,
-            imported_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            imported_at,
+            source,
+            is_estimated
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             source_file = excluded.source_file,
             source_mtime_ns = excluded.source_mtime_ns,
@@ -156,7 +172,9 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
             files_modified_json = excluded.files_modified_json,
             raw_start_json = excluded.raw_start_json,
             raw_shutdown_json = excluded.raw_shutdown_json,
-            imported_at = CURRENT_TIMESTAMP
+            imported_at = CURRENT_TIMESTAMP,
+            source = excluded.source,
+            is_estimated = excluded.is_estimated
         """,
         (
             session.session_id,
@@ -187,6 +205,8 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
             json.dumps(session.files_modified),
             session.raw_start_json,
             session.raw_shutdown_json,
+            session.source,
+            1 if session.is_estimated else 0,
         ),
     )
 
@@ -336,7 +356,9 @@ def fetch_recent_sessions(
             total_premium_requests,
             lines_added,
             lines_removed,
-            duration_seconds
+            duration_seconds,
+            source,
+            is_estimated
         FROM sessions
         {where_clause}
         ORDER BY COALESCE(started_at, shutdown_at) DESC
@@ -368,6 +390,26 @@ def fetch_session_cost_rows(connection: sqlite3.Connection, scope: str | None = 
         JOIN sessions s ON s.session_id = sm.session_id
         {where_clause}
         ORDER BY session_timestamp DESC, sm.model_name ASC
+        """,
+        params,
+    ).fetchall()
+
+
+def fetch_source_breakdown(connection: sqlite3.Connection, scope: str | None = None) -> list[sqlite3.Row]:
+    where_clause, params = _scope_filter(scope)
+    return connection.execute(
+        f"""
+        SELECT
+            source,
+            COUNT(*) AS session_count,
+            COALESCE(SUM(total_requests), 0) AS total_requests,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            COALESCE(SUM(total_premium_requests), 0) AS total_premium_requests,
+            SUM(is_estimated) AS estimated_count
+        FROM sessions
+        {where_clause}
+        GROUP BY source
+        ORDER BY total_tokens DESC
         """,
         params,
     ).fetchall()

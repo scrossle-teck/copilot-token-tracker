@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "copilot-token-tracker"
 dynamic = ["version"]
-description = "Global token tracker for GitHub Copilot CLI sessions"
+description = "Global token tracker for GitHub Copilot CLI and VS Code sessions"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
 authors = [{ name = "J-Bax" }]
-keywords = ["copilot", "cli", "tokens", "telemetry", "dashboard", "sqlite"]
+keywords = ["copilot", "cli", "vscode", "tokens", "telemetry", "dashboard", "sqlite"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
