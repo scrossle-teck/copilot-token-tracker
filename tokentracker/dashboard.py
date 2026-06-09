@@ -263,7 +263,7 @@ def _render_dashboard_html(
     </header>
 
     <section class="notice">
-      <p>This dashboard tracks completed Copilot CLI sessions and VS Code Chat sessions. CLI sessions are imported from <code>session.shutdown</code> events. VS Code Chat sessions are imported from workspace storage with <strong>estimated</strong> token counts (actual usage is not available locally).</p>
+      <p>This dashboard tracks completed Copilot CLI sessions and VS Code Chat sessions. CLI sessions are imported from <code>session.shutdown</code> events. VS Code Chat sessions are imported from workspace storage with <strong>estimated</strong> token counts (actual usage is not available locally), and estimated AI credits are derived from those token estimates plus VS Code model metadata pricing when available.</p>
       <p>Older Copilot CLI session folders may still exist before these totals begin. Versions before <code>0.0.422</code> did not persist the completed-session <code>session.shutdown</code> usage summary this tracker relies on, so those earlier sessions cannot be backfilled into token or cost totals.</p>
       <p>Estimated cost mode: <strong>{escape(cost_strategy)}</strong>. Edit <code>pricing.json</code> in this tracker data directory to set per-model token pricing and/or AI-credit conversion rates.</p>
     </section>

@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 from typing import Iterable
 
@@ -82,10 +83,7 @@ def _extract_sessions(
     # Extract model name and total estimated tokens from the full history,
     # then distribute proportionally across sessions.
     model_name, pricing_rates, total_tokens = _extract_model_and_tokens(all_history)
-    session_count = len(non_empty)
-    per_session_input = total_tokens["input"] // max(session_count, 1)
-    per_session_output = total_tokens["output"] // max(session_count, 1)
-    per_session_requests = max(total_tokens["request_count"] // max(session_count, 1), 1)
+    allocations = _allocate_estimates(non_empty, total_tokens)
 
     mtime_ns = db_path.stat().st_mtime_ns
 
@@ -94,9 +92,9 @@ def _extract_sessions(
             session_id=str(session_id),
             meta=meta,
             model_name=model_name,
-            estimated_input=per_session_input,
-            estimated_output=per_session_output,
-            request_count=per_session_requests,
+            estimated_input=allocations.get(str(session_id), {}).get("input", 0),
+            estimated_output=allocations.get(str(session_id), {}).get("output", 0),
+            request_count=allocations.get(str(session_id), {}).get("request_count", 0),
             pricing_rates=pricing_rates,
             db_path=db_path,
             mtime_ns=mtime_ns,
@@ -238,6 +236,82 @@ def _extract_model_and_tokens(
         "output": estimated_output,
         "request_count": request_count,
     }
+
+
+def _allocate_estimates(
+    sessions: dict[str, dict[str, object]],
+    total_tokens: dict[str, int],
+) -> dict[str, dict[str, int]]:
+    session_ids = [str(session_id) for session_id in sessions.keys()]
+    if not session_ids:
+        return {}
+
+    weights: dict[str, float] = {
+        session_id: _session_weight(sessions[session_id])
+        for session_id in session_ids
+    }
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        weights = {session_id: 1.0 for session_id in session_ids}
+        total_weight = float(len(session_ids))
+
+    input_alloc = _weighted_distribute(total_tokens["input"], weights)
+    output_alloc = _weighted_distribute(total_tokens["output"], weights)
+    request_alloc = _weighted_distribute(total_tokens["request_count"], weights)
+
+    return {
+        session_id: {
+            "input": input_alloc.get(session_id, 0),
+            "output": output_alloc.get(session_id, 0),
+            "request_count": request_alloc.get(session_id, 0),
+        }
+        for session_id in session_ids
+    }
+
+
+def _weighted_distribute(total: int, weights: dict[str, float]) -> dict[str, int]:
+    if total <= 0 or not weights:
+        return {session_id: 0 for session_id in weights.keys()}
+
+    total_weight = sum(weights.values())
+    raw_values: dict[str, float] = {
+        session_id: (total * (weight / total_weight))
+        for session_id, weight in weights.items()
+    }
+    allocated: dict[str, int] = {
+        session_id: int(math.floor(value))
+        for session_id, value in raw_values.items()
+    }
+    remaining = total - sum(allocated.values())
+    if remaining <= 0:
+        return allocated
+
+    remainders = sorted(
+        (
+            (session_id, raw_values[session_id] - allocated[session_id])
+            for session_id in weights.keys()
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+    for index in range(remaining):
+        session_id = remainders[index % len(remainders)][0]
+        allocated[session_id] += 1
+    return allocated
+
+
+def _session_weight(meta: dict[str, object]) -> float:
+    timing = meta.get("timing", {})
+    if isinstance(timing, dict):
+        start = timing.get("startTime")
+        end = timing.get("endTime")
+        try:
+            if start is not None and end is not None:
+                duration_ms = max(0, int(end) - int(start))
+                if duration_ms > 0:
+                    return float(duration_ms)
+        except (TypeError, ValueError):
+            pass
+    return 1.0
 
 
 def _extract_pricing_rates(metadata: dict[str, object]) -> dict[str, float] | None:
