@@ -12,16 +12,36 @@ DEFAULT_MODEL_PRICING = {
     "cacheWriteCostPer1M": 0.0,
 }
 
-# Base API pricing defaults are seeded from the vendors' public pricing pages.
-# For models with prompt-length tiers or time-based cache storage charges, the
-# tracker uses the published base per-token rates because session telemetry does
-# not include enough detail to price those surcharges precisely.
+# Base defaults are seeded from GitHub's Copilot "Models and pricing" table.
+# Source: https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
+# Last verified: 2026-06-09.
+# For models with prompt-length tiers, the tracker uses the published default
+# per-token rates because session telemetry does not include prompt-length
+# detail needed to price long-context tiers precisely.
 PUBLIC_MODEL_PRICING = {
+    "gpt-5.5": {
+        "inputCostPer1M": 5.0,
+        "outputCostPer1M": 30.0,
+        "cacheReadCostPer1M": 0.5,
+        "cacheWriteCostPer1M": 5.0,
+    },
     "gpt-5.4": {
         "inputCostPer1M": 2.5,
         "outputCostPer1M": 15.0,
         "cacheReadCostPer1M": 0.25,
         "cacheWriteCostPer1M": 2.5,
+    },
+    "gpt-5.4-mini": {
+        "inputCostPer1M": 0.75,
+        "outputCostPer1M": 4.5,
+        "cacheReadCostPer1M": 0.075,
+        "cacheWriteCostPer1M": 0.75,
+    },
+    "gpt-5.4-nano": {
+        "inputCostPer1M": 0.2,
+        "outputCostPer1M": 1.25,
+        "cacheReadCostPer1M": 0.02,
+        "cacheWriteCostPer1M": 0.2,
     },
     "gpt-5.3-codex": {
         "inputCostPer1M": 1.75,
@@ -40,30 +60,6 @@ PUBLIC_MODEL_PRICING = {
         "outputCostPer1M": 14.0,
         "cacheReadCostPer1M": 0.175,
         "cacheWriteCostPer1M": 1.75,
-    },
-    "gpt-5.1": {
-        "inputCostPer1M": 1.25,
-        "outputCostPer1M": 10.0,
-        "cacheReadCostPer1M": 0.125,
-        "cacheWriteCostPer1M": 1.25,
-    },
-    "gpt-5.1-codex-max": {
-        "inputCostPer1M": 1.25,
-        "outputCostPer1M": 10.0,
-        "cacheReadCostPer1M": 0.125,
-        "cacheWriteCostPer1M": 1.25,
-    },
-    "gpt-5.1-codex": {
-        "inputCostPer1M": 1.25,
-        "outputCostPer1M": 10.0,
-        "cacheReadCostPer1M": 0.125,
-        "cacheWriteCostPer1M": 1.25,
-    },
-    "gpt-5.1-codex-mini": {
-        "inputCostPer1M": 0.25,
-        "outputCostPer1M": 2.0,
-        "cacheReadCostPer1M": 0.025,
-        "cacheWriteCostPer1M": 0.25,
     },
     "gpt-5-mini": {
         "inputCostPer1M": 0.25,
@@ -89,7 +85,13 @@ PUBLIC_MODEL_PRICING = {
         "cacheReadCostPer1M": 0.5,
         "cacheWriteCostPer1M": 6.25,
     },
-    "claude-opus-4.6-1m": {
+    "claude-opus-4.7": {
+        "inputCostPer1M": 5.0,
+        "outputCostPer1M": 25.0,
+        "cacheReadCostPer1M": 0.5,
+        "cacheWriteCostPer1M": 6.25,
+    },
+    "claude-opus-4.8": {
         "inputCostPer1M": 5.0,
         "outputCostPer1M": 25.0,
         "cacheReadCostPer1M": 0.5,
@@ -130,6 +132,24 @@ PUBLIC_MODEL_PRICING = {
         "outputCostPer1M": 12.0,
         "cacheReadCostPer1M": 0.2,
         "cacheWriteCostPer1M": 2.0,
+    },
+    "gemini-3.1-pro-preview": {
+        "inputCostPer1M": 2.0,
+        "outputCostPer1M": 12.0,
+        "cacheReadCostPer1M": 0.2,
+        "cacheWriteCostPer1M": 2.0,
+    },
+    "gemini-3.5-flash": {
+        "inputCostPer1M": 1.5,
+        "outputCostPer1M": 9.0,
+        "cacheReadCostPer1M": 0.15,
+        "cacheWriteCostPer1M": 1.5,
+    },
+    "gemini-2.5-pro": {
+        "inputCostPer1M": 1.25,
+        "outputCostPer1M": 10.0,
+        "cacheReadCostPer1M": 0.125,
+        "cacheWriteCostPer1M": 1.25,
     },
 }
 
