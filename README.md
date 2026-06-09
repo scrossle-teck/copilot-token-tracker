@@ -14,7 +14,7 @@ This project fills that gap for Windows-first setups by:
 
 ### Copilot CLI (actual metrics)
 
-CLI sessions are imported from `~/.copilot/session-state/*/events.jsonl` with server-reported token counts, premium request costs, and code change stats. This is the highest-fidelity data source.
+CLI sessions are imported from `~/.copilot/session-state/*/events.jsonl` with server-reported token counts, AI-credit telemetry (`totalNanoAiu`), and code change stats. Legacy premium-request cost units are still stored when present for compatibility.
 
 ### VS Code Copilot Chat (estimated metrics)
 
@@ -24,7 +24,7 @@ VS Code Chat sessions are imported from `%APPDATA%\Code\User\workspaceStorage\*\
 
 - Token counts are approximate (can be 20-40% off actual usage)
 - Inline completions and ghost text are not tracked (only chat sessions)
-- Premium request costs are not available (shown as 0)
+- AI-credit and premium-request billing units are not available from VS Code local session storage
 - Code change stats are not available from VS Code sessions
 - Cache read/write tokens are not available
 
@@ -37,7 +37,9 @@ For each completed session, the tracker records:
 - model-level request counts
 - input, output, cache read, and cache write tokens
 - total token counts
-- premium request units from Copilot telemetry
+- AI-credit telemetry (`totalNanoAiu` and derived AI credits) when available
+- billed tokenDetails totals when available (`input`, `cache_read`, `output`)
+- legacy premium request units from Copilot telemetry (compatibility mode)
 - code-change counts and modified files
 - API duration and full session duration
 
@@ -181,17 +183,33 @@ That makes the design resilient without scraping terminal output.
 
 ## Cost notes
 
-Copilot CLI telemetry already includes premium request cost units in `session.shutdown.modelMetrics.*.requests.cost`. This tracker stores those values directly.
+GitHub Copilot billing is usage-based and AI-credit-centric. This tracker treats AI credits as the primary billing metric.
 
-The generated `pricing.json` file supports two estimation modes:
+Reference docs:
 
-1. **Per-model token pricing** using seeded rates from GitHub's Copilot "Models and pricing" table:
+- [About billing for GitHub Copilot](https://docs.github.com/en/copilot/reference/copilot-billing/about-billing-for-github-copilot)
+- [GitHub Copilot Models and pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing) (last verified 2026-06-09)
 
-  Source: [GitHub Copilot Models and pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing) (last verified 2026-06-09)
+Telemetry and estimate priority used by `summary` and the dashboard:
+
+1. AI-credit telemetry from `session.shutdown` (`totalNanoAiu`, shown as AI credits)
+2. Per-model token pricing from `pricing.json`
+3. Legacy premium-request conversion fallback (`usdPerPremiumRequest`)
+
+Compatibility notes:
+
+- Copilot CLI versions before `0.0.422` did not persist the completed-session `session.shutdown` usage summary required for backfilled totals.
+- Legacy premium-request telemetry (`modelMetrics.*.requests.cost`) is still imported and shown when mixed/legacy datasets require it.
+
+The generated `pricing.json` file is AI-credit first and still backward compatible:
+
+1. **AI-credit default conversion + per-model token pricing**:
 
 ```json
 {
   "currency": "USD",
+  "costUnitLabel": "AI credits",
+  "usdPerAiCredit": 0.01,
   "usdPerPremiumRequest": 0.04,
   "models": {
     "default": {
@@ -222,17 +240,17 @@ The generated `pricing.json` file supports two estimation modes:
 }
 ```
 
-1. **Premium-request conversion fallback** if you prefer a simpler estimate:
+1. **Legacy premium-request-only fallback**:
 
 ```json
 { "currency": "USD", "usdPerPremiumRequest": 0.04 }
 ```
 
-Blank or legacy `pricing.json` files are upgraded to include those seeded model rates plus the `usdPerPremiumRequest` fallback of `0.04`, based on GitHub's public Copilot billing docs.
+Blank or legacy `pricing.json` files are upgraded to include seeded model rates plus both conversion defaults (`usdPerAiCredit` and `usdPerPremiumRequest`) so existing users can migrate without manual edits.
 
 For providers that publish long-context surcharges or time-based cache storage prices, the tracker uses the public base token rates and best-effort cache pricing because Copilot session telemetry does not expose enough detail to price every surcharge exactly.
 
-The dashboard and `summary` command prefer per-model token pricing when it is available, and fall back to `usdPerPremiumRequest` for unknown models.
+The dashboard and `summary` command estimate cost in this order: per-model token pricing, then AI-credit conversion, then legacy premium-request fallback.
 
 ## Testing
 
