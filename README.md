@@ -171,7 +171,9 @@ Copilot CLI telemetry already includes premium request cost units in `session.sh
 
 The generated `pricing.json` file supports two estimation modes:
 
-1. **Per-model token pricing** using seeded public API rates for common Copilot models:
+1. **Per-model token pricing** using seeded rates from GitHub's Copilot "Models and pricing" table:
+
+  Source: [GitHub Copilot Models and pricing](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing) (last verified 2026-06-09)
 
 ```json
 {
@@ -206,13 +208,13 @@ The generated `pricing.json` file supports two estimation modes:
 }
 ```
 
-2. **Premium-request conversion fallback** if you prefer a simpler estimate:
+1. **Premium-request conversion fallback** if you prefer a simpler estimate:
 
 ```json
 { "currency": "USD", "usdPerPremiumRequest": 0.04 }
 ```
 
-Blank or legacy `pricing.json` files are upgraded to include those seeded model rates plus the `usdPerPremiumRequest` fallback of `0.04`, based on GitHub's public Copilot premium request billing docs.
+Blank or legacy `pricing.json` files are upgraded to include those seeded model rates plus the `usdPerPremiumRequest` fallback of `0.04`, based on GitHub's public Copilot billing docs.
 
 For providers that publish long-context surcharges or time-based cache storage prices, the tracker uses the public base token rates and best-effort cache pricing because Copilot session telemetry does not expose enough detail to price every surcharge exactly.
 
@@ -264,4 +266,3 @@ Added by this project:
 - HTML dashboard with source breakdown
 - automatic personal-hook based syncing
 - estimated VS Code token usage from local workspace storage
-
