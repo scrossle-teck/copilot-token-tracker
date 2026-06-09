@@ -17,6 +17,7 @@ from tokentracker.pricing import (
     pricing_currency,
 )
 from tokentracker.storage import (
+  fetch_billing_mix,
     fetch_daily_breakdown,
     fetch_model_breakdown,
     fetch_recent_sessions,
@@ -98,6 +99,8 @@ def _render_dashboard_html(
     recent_rows = fetch_recent_sessions(connection, scope=scope, period_start=period_start, period_end=period_end)
     cost_rows = fetch_session_cost_rows(connection, scope=scope, period_start=period_start, period_end=period_end)
     source_rows = fetch_source_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
+    billing_mix = fetch_billing_mix(connection, scope=scope, period_start=period_start, period_end=period_end)
+    has_legacy_premium = int(billing_mix["legacy_premium_sessions"] or 0) > 0
 
     currency = pricing_currency(pricing)
     cost_strategy = describe_cost_strategy(pricing)
@@ -262,14 +265,15 @@ def _render_dashboard_html(
     <section class="notice">
       <p>This dashboard tracks completed Copilot CLI sessions and VS Code Chat sessions. CLI sessions are imported from <code>session.shutdown</code> events. VS Code Chat sessions are imported from workspace storage with <strong>estimated</strong> token counts (actual usage is not available locally).</p>
       <p>Older Copilot CLI session folders may still exist before these totals begin. Versions before <code>0.0.422</code> did not persist the completed-session <code>session.shutdown</code> usage summary this tracker relies on, so those earlier sessions cannot be backfilled into token or cost totals.</p>
-      <p>Estimated cost mode: <strong>{escape(cost_strategy)}</strong>. Edit <code>pricing.json</code> in this tracker data directory to set per-model token pricing and/or a premium-request conversion rate.</p>
+      <p>Estimated cost mode: <strong>{escape(cost_strategy)}</strong>. Edit <code>pricing.json</code> in this tracker data directory to set per-model token pricing and/or AI-credit conversion rates.</p>
     </section>
 
     <section class="cards">
       {_card("Completed sessions", _format_int(summary["session_count"]))}
+      {_card("AI credits", _format_decimal(summary["total_ai_credits"]))}
       {_card("Total tokens", _format_int(summary["total_tokens"]))}
       {_card("Total requests", _format_int(summary["total_requests"]))}
-      {_card("Premium request units", _format_decimal(summary["total_premium_requests"]))}
+      {(_card("Legacy premium units", _format_decimal(summary["total_premium_requests"])) if has_legacy_premium else "")}
       {_card("Session duration", _format_duration(summary["duration_seconds"]))}
       {_card("Code changes", f"{_format_int(summary['lines_added'])} added / {_format_int(summary['lines_removed'])} removed")}
       {_card("Input tokens", _format_int(summary["total_input_tokens"]))}
@@ -290,7 +294,7 @@ def _render_dashboard_html(
                 <th class="numeric">Sessions</th>
                 <th class="numeric">Tokens</th>
                 <th class="bar-cell">Usage</th>
-                <th class="numeric">Premium units</th>
+                <th class="numeric">AI credits</th>
                 <th class="numeric">Estimated cost</th>
               </tr>
             </thead>
@@ -311,7 +315,7 @@ def _render_dashboard_html(
                 <th class="numeric">Sessions</th>
                 <th class="numeric">Requests</th>
                 <th class="numeric">Tokens</th>
-                <th class="numeric">Premium units</th>
+                <th class="numeric">AI credits</th>
                 <th>Pricing basis</th>
                 <th class="numeric">Estimated cost</th>
               </tr>
@@ -357,7 +361,7 @@ def _render_dashboard_html(
                 <th>Scope</th>
                 <th>Model</th>
                 <th class="numeric">Tokens</th>
-                <th class="numeric">Premium units</th>
+                <th class="numeric">AI credits</th>
                 <th class="numeric">Estimated cost</th>
               </tr>
             </thead>
@@ -394,7 +398,7 @@ def _daily_rows(rows: list[Row], cost_by_day: dict[str, float], currency: str) -
             f"<td class=\"numeric\">{_format_int(row['session_count'])}</td>"
             f"<td class=\"numeric\">{_format_int(row['total_tokens'])}</td>"
             f"<td class=\"bar-cell\"><div class=\"bar\" style=\"--bar-width:{width}%\"></div></td>"
-            f"<td class=\"numeric\">{_format_decimal(row['total_premium_requests'])}</td>"
+            f"<td class=\"numeric\">{_format_decimal(row['total_ai_credits'])}</td>"
             f"<td class=\"numeric\">{_format_currency(cost_by_day.get(day), currency)}</td>"
             "</tr>"
         )
@@ -414,7 +418,7 @@ def _model_rows(rows: list[Row], pricing: dict[str, object], currency: str) -> s
             f"<td class=\"numeric\">{_format_int(row['session_count'])}</td>"
             f"<td class=\"numeric\">{_format_int(row['request_count'])}</td>"
             f"<td class=\"numeric\">{_format_int(row['total_tokens'])}</td>"
-            f"<td class=\"numeric\">{_format_decimal(row['premium_request_cost'])}</td>"
+            f"<td class=\"numeric\">{_format_decimal(row['ai_credits'])}</td>"
             f"<td class=\"wrap-cell\">{escape(pricing_basis)}</td>"
             f"<td class=\"numeric\">{_format_currency(estimated_cost, currency)}</td>"
             "</tr>"
@@ -459,7 +463,7 @@ def _recent_rows(rows: list[Row], recent_costs: dict[str, float], currency: str)
         f"<td class=\"wrap-cell\">{escape(str(row['scope']))}</td>"
         f"<td class=\"wrap-cell\">{escape(str(row['current_model'] or '<unknown>'))}</td>"
         f"<td class=\"numeric\">{_format_int(row['total_tokens'])}{_estimated_badge(row['is_estimated'])}</td>"
-        f"<td class=\"numeric\">{_format_decimal(row['total_premium_requests'])}</td>"
+        f"<td class=\"numeric\">{_format_decimal(row['total_ai_credits'] or 0.0)}</td>"
         f"<td class=\"numeric\">{_format_currency(recent_costs.get(str(row['session_id'])), currency)}</td>"
         "</tr>"
         for row in rows
@@ -555,14 +559,15 @@ def _source_section(source_rows: list[Row]) -> str:
     for row in source_rows:
         label = _source_label(row["source"])
         est = int(row["estimated_count"] or 0)
-        note = " (estimated)" if est > 0 else ""
+        actual = int(row["session_count"] or 0) - est
+        note = f" ({actual} actual / {est} estimated)"
         rendered.append(
             "<tr>"
             f"<td>{escape(label)}{escape(note)}</td>"
             f"<td class=\"numeric\">{_format_int(row['session_count'])}</td>"
             f"<td class=\"numeric\">{_format_int(row['total_requests'])}</td>"
             f"<td class=\"numeric\">{_format_int(row['total_tokens'])}</td>"
-            f"<td class=\"numeric\">{_format_decimal(row['total_premium_requests'])}</td>"
+          f"<td class=\"numeric\">{_format_decimal(row['total_ai_credits'])}</td>"
             "</tr>"
         )
     return f"""
@@ -576,7 +581,7 @@ def _source_section(source_rows: list[Row]) -> str:
               <th class="numeric">Sessions</th>
               <th class="numeric">Requests</th>
               <th class="numeric">Tokens</th>
-              <th class="numeric">Premium units</th>
+              <th class="numeric">AI credits</th>
             </tr>
           </thead>
           <tbody>

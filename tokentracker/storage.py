@@ -557,3 +557,24 @@ def fetch_source_breakdown(
         params,
     ).fetchall()
 
+
+def fetch_billing_mix(
+    connection: sqlite3.Connection,
+    scope: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> sqlite3.Row:
+    where_clause, params = _query_filter(scope, period_start, period_end)
+    return connection.execute(
+        f"""
+        SELECT
+            COUNT(*) AS session_count,
+            COALESCE(SUM(CASE WHEN total_ai_credits IS NOT NULL THEN 1 ELSE 0 END), 0) AS ai_credit_sessions,
+            COALESCE(SUM(CASE WHEN total_ai_credits IS NULL AND total_premium_requests > 0 THEN 1 ELSE 0 END), 0) AS legacy_premium_sessions,
+            COALESCE(SUM(is_estimated), 0) AS estimated_sessions
+        FROM sessions
+        {where_clause}
+        """,
+        params,
+    ).fetchone()
+

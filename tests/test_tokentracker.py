@@ -433,6 +433,7 @@ class TokenTrackerTests(unittest.TestCase):
         self.assertIn("class=\"table-wrap\"", html)
         self.assertIn("overflow-wrap: anywhere;", html)
         self.assertIn("class=\"wrap-cell\"", html)
+        self.assertIn("AI credits", html)
         self.assertIn("Pricing basis", html)
         self.assertIn("Input $1", html)
         self.assertIn("Cache write $1.25", html)
@@ -568,6 +569,73 @@ class TokenTrackerTests(unittest.TestCase):
         self.assertIsNone(session.billed_input_tokens)
         self.assertIsNone(session.billed_cache_read_tokens)
         self.assertIsNone(session.billed_output_tokens)
+
+    def test_summary_prefers_ai_credits_and_keeps_legacy_units_for_mixed_data(self) -> None:
+        session_id = "aiu-summary-session"
+        session_dir = self.session_state_dir / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "type": "session.shutdown",
+            "timestamp": "2026-06-09T12:01:00.000Z",
+            "data": {
+                "shutdownType": "routine",
+                "totalPremiumRequests": 1.2,
+                "totalNanoAiu": 19870488000,
+                "tokenDetails": {
+                    "input": {"tokenCount": 148364},
+                    "cache_read": {"tokenCount": 723456},
+                    "output": {"tokenCount": 12278},
+                },
+                "totalApiDurationMs": 1000,
+                "sessionStartTime": 1772920800000,
+                "codeChanges": {
+                    "linesAdded": 0,
+                    "linesRemoved": 0,
+                    "filesModified": [],
+                },
+                "modelMetrics": {
+                    "gpt-5.4-mini": {
+                        "requests": {"count": 2, "cost": 1.2},
+                        "usage": {
+                            "inputTokens": 871820,
+                            "outputTokens": 12278,
+                            "cacheReadTokens": 723456,
+                            "cacheWriteTokens": 0,
+                        },
+                        "totalNanoAiu": 19870488000,
+                        "tokenDetails": {
+                            "input": {"tokenCount": 148364},
+                            "cache_read": {"tokenCount": 723456},
+                            "output": {"tokenCount": 12278},
+                        },
+                    }
+                },
+                "currentModel": "gpt-5.4-mini",
+            },
+        }
+        (session_dir / "events.jsonl").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            exit_code = handle_summary(
+                type(
+                    "Args",
+                    (),
+                    {
+                        "copilot_home": self.copilot_home,
+                        "data_dir": self.data_dir,
+                        "scope": None,
+                        "sources": "cli",
+                        "month": None,
+                        "current_month": False,
+                    },
+                )()
+            )
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("AI credits:", output)
+        self.assertIn("Legacy premium request units:", output)
 
     def test_storage_migrates_existing_database_to_ai_credit_columns(self) -> None:
         from tokentracker.storage import connect
