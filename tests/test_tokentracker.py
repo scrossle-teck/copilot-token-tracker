@@ -1069,6 +1069,67 @@ class VSCodeImporterTests(unittest.TestCase):
         sessions = list(parse_vscode_sessions(db_path))
         self.assertEqual(len(sessions), 0)
 
+    def test_parse_vscode_sessions_weights_allocation_by_duration(self) -> None:
+        from tokentracker.vscode_importer import parse_vscode_sessions
+
+        sessions = {
+            "short-session": {
+                "sessionId": "short-session",
+                "title": "Short",
+                "lastMessageDate": 1772920800000,
+                "isImported": False,
+                "initialLocation": "panel",
+                "isEmpty": False,
+                "timing": {
+                    "startTime": 1772920790000,
+                    "endTime": 1772920800000,
+                },
+            },
+            "long-session": {
+                "sessionId": "long-session",
+                "title": "Long",
+                "lastMessageDate": 1772920800000,
+                "isImported": False,
+                "initialLocation": "panel",
+                "isEmpty": False,
+                "timing": {
+                    "startTime": 1772920200000,
+                    "endTime": 1772920800000,
+                },
+            },
+        }
+        history_entries = [
+            {
+                "inputText": "x" * 400,
+                "selectedModel": {
+                    "identifier": "copilot/gpt-5.3-codex",
+                    "metadata": {
+                        "id": "gpt-5.3-codex",
+                        "name": "GPT-5.3-Codex",
+                        "inputCost": 175,
+                        "outputCost": 1400,
+                        "cacheCost": 17,
+                    },
+                },
+            }
+        ]
+
+        db_path = self._create_mock_vscode_db(sessions=sessions, history_entries=history_entries)
+        parsed = list(parse_vscode_sessions(db_path))
+        self.assertEqual(len(parsed), 2)
+
+        by_id = {s.session_id: s for s in parsed}
+        short = by_id["vscode-chat:short-session"]
+        long = by_id["vscode-chat:long-session"]
+
+        self.assertGreater(long.total_tokens, short.total_tokens)
+        self.assertGreater(long.total_requests, short.total_requests)
+
+        total_tokens = short.total_tokens + long.total_tokens
+        total_requests = short.total_requests + long.total_requests
+        self.assertEqual(total_tokens, int(400 * 0.25) + int(int(400 * 0.25) * 2))
+        self.assertEqual(total_requests, 1)
+
     def test_sync_imports_vscode_sessions_into_database(self) -> None:
         # Set up CLI fixture
         cli_session_dir = self.copilot_home / "session-state" / "cli-session-1"
