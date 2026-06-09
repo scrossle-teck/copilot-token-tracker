@@ -154,11 +154,13 @@ PUBLIC_MODEL_PRICING = {
 }
 
 DEFAULT_USD_PER_PREMIUM_REQUEST = 0.04
+DEFAULT_USD_PER_AI_CREDIT = 0.01
 
 def _default_pricing() -> dict[str, object]:
     return {
         "currency": "USD",
-        "costUnitLabel": "premium requests",
+        "costUnitLabel": "AI credits",
+        "usdPerAiCredit": DEFAULT_USD_PER_AI_CREDIT,
         "usdPerPremiumRequest": DEFAULT_USD_PER_PREMIUM_REQUEST,
         "models": {
             "default": DEFAULT_MODEL_PRICING.copy(),
@@ -187,8 +189,11 @@ def ensure_pricing_file(data_dir: Path) -> Path:
         upgraded["currency"] = _string_or_default(raw_pricing.get("currency"), "USD")
         upgraded["costUnitLabel"] = _string_or_default(
             raw_pricing.get("costUnitLabel"),
-            "premium requests",
+            "AI credits",
         )
+        upgraded["usdPerAiCredit"] = _as_float_or_none(raw_pricing.get("usdPerAiCredit"))
+        if upgraded["usdPerAiCredit"] is None:
+            upgraded["usdPerAiCredit"] = DEFAULT_USD_PER_AI_CREDIT
         upgraded["usdPerPremiumRequest"] = _as_float_or_none(
             raw_pricing.get("usdPerPremiumRequest")
         )
@@ -214,7 +219,8 @@ def normalize_pricing(pricing: Mapping[str, object] | None) -> dict[str, object]
     models.setdefault("default", DEFAULT_MODEL_PRICING.copy())
     return {
         "currency": _string_or_default(raw_pricing.get("currency"), "USD"),
-        "costUnitLabel": _string_or_default(raw_pricing.get("costUnitLabel"), "premium requests"),
+        "costUnitLabel": _string_or_default(raw_pricing.get("costUnitLabel"), "AI credits"),
+        "usdPerAiCredit": _as_float_or_none(raw_pricing.get("usdPerAiCredit")),
         "usdPerPremiumRequest": _as_float_or_none(raw_pricing.get("usdPerPremiumRequest")),
         "models": models,
     }
@@ -226,6 +232,10 @@ def pricing_currency(pricing: Mapping[str, object]) -> str:
 
 def premium_request_rate(pricing: Mapping[str, object]) -> float | None:
     return _as_float_or_none(pricing.get("usdPerPremiumRequest"))
+
+
+def ai_credit_rate(pricing: Mapping[str, object]) -> float | None:
+    return _as_float_or_none(pricing.get("usdPerAiCredit"))
 
 
 def model_pricing_for(model_name: str, pricing: Mapping[str, object]) -> dict[str, float | None] | None:
@@ -240,17 +250,33 @@ def describe_cost_strategy(pricing: Mapping[str, object]) -> str:
     has_token_pricing = isinstance(models, Mapping) and any(
         _has_token_pricing(config) for config in models.values() if isinstance(config, Mapping)
     )
+    has_ai_credit_rate = ai_credit_rate(pricing) is not None
     has_premium_request_rate = premium_request_rate(pricing) is not None
+    if has_token_pricing and has_ai_credit_rate and has_premium_request_rate:
+        return "model token rates with AI credit fallback and legacy premium fallback"
+    if has_token_pricing and has_ai_credit_rate:
+        return "model token rates with AI credit fallback"
     if has_token_pricing and has_premium_request_rate:
-        return "model token rates with premium request fallback"
+        return "model token rates with legacy premium fallback"
     if has_token_pricing:
         return "model token rates"
+    if has_ai_credit_rate and has_premium_request_rate:
+        return "AI credit conversion with legacy premium fallback"
+    if has_ai_credit_rate:
+        return "AI credit conversion"
     if has_premium_request_rate:
-        return "premium request conversion"
+        return "legacy premium request conversion"
     return "not configured"
 
 
-def estimate_currency_amount(premium_request_units: float, pricing: dict[str, object]) -> float | None:
+def estimate_currency_amount(ai_credit_units: float, pricing: Mapping[str, object]) -> float | None:
+    rate = ai_credit_rate(pricing)
+    if rate is None:
+        return None
+    return ai_credit_units * rate
+
+
+def estimate_premium_currency_amount(premium_request_units: float, pricing: Mapping[str, object]) -> float | None:
     rate = premium_request_rate(pricing)
     if rate is None:
         return None
@@ -265,6 +291,7 @@ def estimate_model_currency_amount(
     cache_write_tokens: int,
     premium_request_units: float,
     pricing: Mapping[str, object],
+    ai_credit_units: float | None = None,
 ) -> float | None:
     token_cost = estimate_model_token_cost(
         model_name=model_name,
@@ -276,10 +303,20 @@ def estimate_model_currency_amount(
     )
     if token_cost is not None:
         return token_cost
-    return estimate_currency_amount(premium_request_units, dict(pricing))
+    if ai_credit_units is not None:
+        ai_credit_cost = estimate_currency_amount(ai_credit_units, pricing)
+        if ai_credit_cost is not None:
+            return ai_credit_cost
+    return estimate_premium_currency_amount(premium_request_units, pricing)
 
 
 def estimate_model_row_currency_amount(row: Mapping[str, object], pricing: Mapping[str, object]) -> float | None:
+    ai_credit_units: float | None = None
+    try:
+        ai_credit_units = _as_float_or_none(row["ai_credits"])
+    except (KeyError, IndexError, TypeError):
+        ai_credit_units = None
+
     return estimate_model_currency_amount(
         model_name=str(row["model_name"]),
         input_tokens=int(row["input_tokens"]),
@@ -288,6 +325,7 @@ def estimate_model_row_currency_amount(row: Mapping[str, object], pricing: Mappi
         cache_write_tokens=int(row["cache_write_tokens"]),
         premium_request_units=float(row["premium_request_cost"]),
         pricing=pricing,
+        ai_credit_units=ai_credit_units,
     )
 
 

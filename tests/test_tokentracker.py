@@ -15,10 +15,12 @@ from tokentracker import __version__
 from tokentracker.cli import handle_doctor, handle_summary, main, sync_sessions
 from tokentracker.dashboard import project_dashboard_path
 from tokentracker.pricing import (
+    DEFAULT_USD_PER_AI_CREDIT,
     DEFAULT_USD_PER_PREMIUM_REQUEST,
     PUBLIC_MODEL_PRICING,
     ensure_pricing_file,
     estimate_model_currency_amount,
+    normalize_pricing,
 )
 
 
@@ -276,6 +278,34 @@ class TokenTrackerTests(unittest.TestCase):
         self.assertAlmostEqual(token_based, 0.0082875)
         self.assertAlmostEqual(fallback, 0.5)
 
+    def test_estimated_cost_prefers_ai_credit_fallback_over_legacy_premium(self) -> None:
+        pricing = {
+            "currency": "USD",
+            "usdPerAiCredit": 0.01,
+            "usdPerPremiumRequest": 0.2,
+            "models": {
+                "default": {
+                    "inputCostPer1M": None,
+                    "outputCostPer1M": None,
+                    "cacheReadCostPer1M": 0,
+                    "cacheWriteCostPer1M": 0,
+                }
+            },
+        }
+        amount = estimate_model_currency_amount(
+            model_name="unknown-model",
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            premium_request_units=2.5,
+            pricing=pricing,
+            ai_credit_units=12.0,
+        )
+
+        assert amount is not None
+        self.assertAlmostEqual(amount, 0.12)
+
     def test_summary_reports_estimated_cost_from_pricing_file(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "pricing.json").write_text(
@@ -314,6 +344,8 @@ class TokenTrackerTests(unittest.TestCase):
         path = ensure_pricing_file(self.data_dir)
         pricing = json.loads(path.read_text(encoding="utf-8"))
 
+        self.assertEqual(pricing["costUnitLabel"], "AI credits")
+        self.assertEqual(pricing["usdPerAiCredit"], DEFAULT_USD_PER_AI_CREDIT)
         self.assertEqual(pricing["usdPerPremiumRequest"], DEFAULT_USD_PER_PREMIUM_REQUEST)
         self.assertEqual(pricing["models"]["gpt-5.4"], PUBLIC_MODEL_PRICING["gpt-5.4"])
         self.assertEqual(
@@ -342,6 +374,7 @@ class TokenTrackerTests(unittest.TestCase):
         ensure_pricing_file(self.data_dir)
         upgraded = json.loads(path.read_text(encoding="utf-8"))
 
+        self.assertEqual(upgraded["usdPerAiCredit"], DEFAULT_USD_PER_AI_CREDIT)
         self.assertEqual(upgraded["usdPerPremiumRequest"], DEFAULT_USD_PER_PREMIUM_REQUEST)
         self.assertEqual(upgraded["models"]["gpt-5.4"], PUBLIC_MODEL_PRICING["gpt-5.4"])
         self.assertEqual(
@@ -370,8 +403,22 @@ class TokenTrackerTests(unittest.TestCase):
         ensure_pricing_file(self.data_dir)
         upgraded = json.loads(path.read_text(encoding="utf-8"))
 
+        self.assertEqual(upgraded["usdPerAiCredit"], DEFAULT_USD_PER_AI_CREDIT)
         self.assertEqual(upgraded["usdPerPremiumRequest"], DEFAULT_USD_PER_PREMIUM_REQUEST)
         self.assertEqual(upgraded["models"]["gpt-5.4"], PUBLIC_MODEL_PRICING["gpt-5.4"])
+
+    def test_normalize_pricing_keeps_legacy_file_without_ai_rate(self) -> None:
+        normalized = normalize_pricing(
+            {
+                "currency": "USD",
+                "costUnitLabel": "premium requests",
+                "usdPerPremiumRequest": 0.04,
+                "models": {"default": {"inputCostPer1M": None, "outputCostPer1M": None}},
+            }
+        )
+
+        self.assertIsNone(normalized["usdPerAiCredit"])
+        self.assertEqual(normalized["usdPerPremiumRequest"], 0.04)
 
     def test_dashboard_html_includes_history_note_and_layout_guards(self) -> None:
         long_repo = "octo/" + ("very-long-repository-name-" * 6).rstrip("-")
