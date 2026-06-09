@@ -74,6 +74,11 @@ def _initialize_schema(connection: sqlite3.Connection) -> None:
             total_cache_read_tokens INTEGER NOT NULL,
             total_cache_write_tokens INTEGER NOT NULL,
             total_tokens INTEGER NOT NULL,
+            total_nano_aiu INTEGER,
+            total_ai_credits REAL,
+            billed_input_tokens INTEGER,
+            billed_output_tokens INTEGER,
+            billed_cache_read_tokens INTEGER,
             lines_added INTEGER NOT NULL,
             lines_removed INTEGER NOT NULL,
             files_modified_count INTEGER NOT NULL,
@@ -95,12 +100,18 @@ def _initialize_schema(connection: sqlite3.Connection) -> None:
             cache_read_tokens INTEGER NOT NULL,
             cache_write_tokens INTEGER NOT NULL,
             total_tokens INTEGER NOT NULL,
+            total_nano_aiu INTEGER,
+            ai_credits REAL,
+            billed_input_tokens INTEGER,
+            billed_output_tokens INTEGER,
+            billed_cache_read_tokens INTEGER,
             PRIMARY KEY (session_id, model_name),
             FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
         );
         """
     )
     _migrate_add_source_columns(connection)
+    _migrate_add_ai_credit_columns(connection)
 
 
 def _migrate_add_source_columns(connection: sqlite3.Connection) -> None:
@@ -112,6 +123,38 @@ def _migrate_add_source_columns(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'cli'")
     if "is_estimated" not in existing:
         connection.execute("ALTER TABLE sessions ADD COLUMN is_estimated INTEGER NOT NULL DEFAULT 0")
+
+
+def _migrate_add_ai_credit_columns(connection: sqlite3.Connection) -> None:
+    session_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+    }
+    if "total_nano_aiu" not in session_columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN total_nano_aiu INTEGER")
+    if "total_ai_credits" not in session_columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN total_ai_credits REAL")
+    if "billed_input_tokens" not in session_columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN billed_input_tokens INTEGER")
+    if "billed_output_tokens" not in session_columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN billed_output_tokens INTEGER")
+    if "billed_cache_read_tokens" not in session_columns:
+        connection.execute("ALTER TABLE sessions ADD COLUMN billed_cache_read_tokens INTEGER")
+
+    model_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(session_models)").fetchall()
+    }
+    if "total_nano_aiu" not in model_columns:
+        connection.execute("ALTER TABLE session_models ADD COLUMN total_nano_aiu INTEGER")
+    if "ai_credits" not in model_columns:
+        connection.execute("ALTER TABLE session_models ADD COLUMN ai_credits REAL")
+    if "billed_input_tokens" not in model_columns:
+        connection.execute("ALTER TABLE session_models ADD COLUMN billed_input_tokens INTEGER")
+    if "billed_output_tokens" not in model_columns:
+        connection.execute("ALTER TABLE session_models ADD COLUMN billed_output_tokens INTEGER")
+    if "billed_cache_read_tokens" not in model_columns:
+        connection.execute("ALTER TABLE session_models ADD COLUMN billed_cache_read_tokens INTEGER")
 
 
 def existing_session_mtimes(connection: sqlite3.Connection) -> dict[str, int]:
@@ -155,16 +198,20 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
             total_cache_read_tokens,
             total_cache_write_tokens,
             total_tokens,
+            total_nano_aiu,
+            total_ai_credits,
+            billed_input_tokens,
+            billed_output_tokens,
+            billed_cache_read_tokens,
             lines_added,
             lines_removed,
             files_modified_count,
             files_modified_json,
             raw_start_json,
             raw_shutdown_json,
-            imported_at,
             source,
             is_estimated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             source_file = excluded.source_file,
             source_mtime_ns = excluded.source_mtime_ns,
@@ -187,6 +234,11 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
             total_cache_read_tokens = excluded.total_cache_read_tokens,
             total_cache_write_tokens = excluded.total_cache_write_tokens,
             total_tokens = excluded.total_tokens,
+            total_nano_aiu = excluded.total_nano_aiu,
+            total_ai_credits = excluded.total_ai_credits,
+            billed_input_tokens = excluded.billed_input_tokens,
+            billed_output_tokens = excluded.billed_output_tokens,
+            billed_cache_read_tokens = excluded.billed_cache_read_tokens,
             lines_added = excluded.lines_added,
             lines_removed = excluded.lines_removed,
             files_modified_count = excluded.files_modified_count,
@@ -220,6 +272,11 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
             session.total_cache_read_tokens,
             session.total_cache_write_tokens,
             session.total_tokens,
+            session.total_nano_aiu,
+            session.total_ai_credits,
+            session.billed_input_tokens,
+            session.billed_output_tokens,
+            session.billed_cache_read_tokens,
             session.lines_added,
             session.lines_removed,
             session.files_modified_count,
@@ -246,8 +303,13 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
-            total_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            total_tokens,
+            total_nano_aiu,
+            ai_credits,
+            billed_input_tokens,
+            billed_output_tokens,
+            billed_cache_read_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -260,6 +322,11 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
                 model.cache_read_tokens,
                 model.cache_write_tokens,
                 model.total_tokens,
+                model.total_nano_aiu,
+                model.ai_credits,
+                model.billed_input_tokens,
+                model.billed_output_tokens,
+                model.billed_cache_read_tokens,
             )
             for model in session.models
         ],
@@ -285,6 +352,11 @@ def fetch_summary(
             COALESCE(SUM(total_cache_read_tokens), 0) AS total_cache_read_tokens,
             COALESCE(SUM(total_cache_write_tokens), 0) AS total_cache_write_tokens,
             COALESCE(SUM(total_premium_requests), 0) AS total_premium_requests,
+            COALESCE(SUM(total_nano_aiu), 0) AS total_nano_aiu,
+            COALESCE(SUM(total_ai_credits), 0) AS total_ai_credits,
+            COALESCE(SUM(billed_input_tokens), 0) AS billed_input_tokens,
+            COALESCE(SUM(billed_output_tokens), 0) AS billed_output_tokens,
+            COALESCE(SUM(billed_cache_read_tokens), 0) AS billed_cache_read_tokens,
             COALESCE(SUM(lines_added), 0) AS lines_added,
             COALESCE(SUM(lines_removed), 0) AS lines_removed,
             COALESCE(SUM(duration_seconds), 0) AS duration_seconds
@@ -313,7 +385,12 @@ def fetch_model_breakdown(
             COALESCE(SUM(sm.output_tokens), 0) AS output_tokens,
             COALESCE(SUM(sm.cache_read_tokens), 0) AS cache_read_tokens,
             COALESCE(SUM(sm.cache_write_tokens), 0) AS cache_write_tokens,
-            COALESCE(SUM(sm.premium_request_cost), 0) AS premium_request_cost
+            COALESCE(SUM(sm.premium_request_cost), 0) AS premium_request_cost,
+            COALESCE(SUM(sm.total_nano_aiu), 0) AS total_nano_aiu,
+            COALESCE(SUM(sm.ai_credits), 0) AS ai_credits,
+            COALESCE(SUM(sm.billed_input_tokens), 0) AS billed_input_tokens,
+            COALESCE(SUM(sm.billed_output_tokens), 0) AS billed_output_tokens,
+            COALESCE(SUM(sm.billed_cache_read_tokens), 0) AS billed_cache_read_tokens
         FROM session_models sm
         JOIN sessions s ON s.session_id = sm.session_id
         {where_clause}
@@ -340,6 +417,8 @@ def fetch_repo_breakdown(
             COALESCE(SUM(total_requests), 0) AS total_requests,
             COALESCE(SUM(total_tokens), 0) AS total_tokens,
             COALESCE(SUM(total_premium_requests), 0) AS total_premium_requests,
+            COALESCE(SUM(total_nano_aiu), 0) AS total_nano_aiu,
+            COALESCE(SUM(total_ai_credits), 0) AS total_ai_credits,
             COALESCE(SUM(lines_added), 0) AS lines_added,
             COALESCE(SUM(lines_removed), 0) AS lines_removed,
             COALESCE(SUM(duration_seconds), 0) AS duration_seconds
@@ -367,6 +446,8 @@ def fetch_daily_breakdown(
             COALESCE(SUM(total_requests), 0) AS total_requests,
             COALESCE(SUM(total_tokens), 0) AS total_tokens,
             COALESCE(SUM(total_premium_requests), 0) AS total_premium_requests,
+            COALESCE(SUM(total_nano_aiu), 0) AS total_nano_aiu,
+            COALESCE(SUM(total_ai_credits), 0) AS total_ai_credits,
             COALESCE(SUM(duration_seconds), 0) AS duration_seconds
         FROM sessions
         {where_clause}
@@ -397,6 +478,8 @@ def fetch_recent_sessions(
             total_requests,
             total_tokens,
             total_premium_requests,
+            total_nano_aiu,
+            total_ai_credits,
             lines_added,
             lines_removed,
             duration_seconds,
@@ -433,7 +516,12 @@ def fetch_session_cost_rows(
             sm.output_tokens,
             sm.cache_read_tokens,
             sm.cache_write_tokens,
-            sm.total_tokens
+            sm.total_tokens,
+            sm.total_nano_aiu,
+            sm.ai_credits,
+            sm.billed_input_tokens,
+            sm.billed_output_tokens,
+            sm.billed_cache_read_tokens
         FROM session_models sm
         JOIN sessions s ON s.session_id = sm.session_id
         {where_clause}
@@ -458,6 +546,8 @@ def fetch_source_breakdown(
             COALESCE(SUM(total_requests), 0) AS total_requests,
             COALESCE(SUM(total_tokens), 0) AS total_tokens,
             COALESCE(SUM(total_premium_requests), 0) AS total_premium_requests,
+            COALESCE(SUM(total_nano_aiu), 0) AS total_nano_aiu,
+            COALESCE(SUM(total_ai_credits), 0) AS total_ai_credits,
             SUM(is_estimated) AS estimated_count
         FROM sessions
         {where_clause}

@@ -522,6 +522,222 @@ class TokenTrackerTests(unittest.TestCase):
         self.assertIsNone(session.billed_cache_read_tokens)
         self.assertIsNone(session.billed_output_tokens)
 
+    def test_storage_migrates_existing_database_to_ai_credit_columns(self) -> None:
+        from tokentracker.storage import connect
+
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        database_path = self.data_dir / "token-tracker.db"
+        with sqlite3.connect(database_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    source_file TEXT NOT NULL,
+                    source_mtime_ns INTEGER NOT NULL,
+                    copilot_version TEXT,
+                    started_at TEXT,
+                    shutdown_at TEXT NOT NULL,
+                    shutdown_type TEXT,
+                    duration_seconds INTEGER,
+                    cwd TEXT,
+                    git_root TEXT,
+                    branch TEXT,
+                    repository TEXT,
+                    selected_model TEXT,
+                    current_model TEXT,
+                    total_premium_requests REAL NOT NULL,
+                    total_api_duration_ms INTEGER NOT NULL,
+                    total_requests INTEGER NOT NULL,
+                    total_input_tokens INTEGER NOT NULL,
+                    total_output_tokens INTEGER NOT NULL,
+                    total_cache_read_tokens INTEGER NOT NULL,
+                    total_cache_write_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    lines_added INTEGER NOT NULL,
+                    lines_removed INTEGER NOT NULL,
+                    files_modified_count INTEGER NOT NULL,
+                    files_modified_json TEXT NOT NULL,
+                    raw_start_json TEXT,
+                    raw_shutdown_json TEXT NOT NULL,
+                    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    source TEXT NOT NULL DEFAULT 'cli',
+                    is_estimated INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE session_models (
+                    session_id TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    request_count INTEGER NOT NULL,
+                    premium_request_cost REAL NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    cache_read_tokens INTEGER NOT NULL,
+                    cache_write_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    PRIMARY KEY (session_id, model_name)
+                );
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO sessions (
+                    session_id,
+                    source_file,
+                    source_mtime_ns,
+                    shutdown_at,
+                    total_premium_requests,
+                    total_api_duration_ms,
+                    total_requests,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_read_tokens,
+                    total_cache_write_tokens,
+                    total_tokens,
+                    lines_added,
+                    lines_removed,
+                    files_modified_count,
+                    files_modified_json,
+                    raw_shutdown_json,
+                    source,
+                    is_estimated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-session",
+                    str(self.session_state_dir / "fixture-session-1" / "events.jsonl"),
+                    1,
+                    "2026-03-07T22:01:00.000Z",
+                    1.0,
+                    100,
+                    1,
+                    10,
+                    10,
+                    0,
+                    0,
+                    20,
+                    0,
+                    0,
+                    0,
+                    "[]",
+                    "{}",
+                    "cli",
+                    0,
+                ),
+            )
+            connection.commit()
+
+        with connect(database_path) as connection:
+            session_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            model_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(session_models)").fetchall()
+            }
+            self.assertIn("total_nano_aiu", session_columns)
+            self.assertIn("total_ai_credits", session_columns)
+            self.assertIn("billed_input_tokens", session_columns)
+            self.assertIn("billed_output_tokens", session_columns)
+            self.assertIn("billed_cache_read_tokens", session_columns)
+            self.assertIn("total_nano_aiu", model_columns)
+            self.assertIn("ai_credits", model_columns)
+            self.assertIn("billed_input_tokens", model_columns)
+            self.assertIn("billed_output_tokens", model_columns)
+            self.assertIn("billed_cache_read_tokens", model_columns)
+
+            row = connection.execute(
+                "SELECT session_id, total_ai_credits, billed_input_tokens FROM sessions WHERE session_id = ?",
+                ("legacy-session",),
+            ).fetchone()
+            assert row is not None
+            self.assertEqual(row["session_id"], "legacy-session")
+            self.assertIsNone(row["total_ai_credits"])
+            self.assertIsNone(row["billed_input_tokens"])
+
+    def test_sync_persists_ai_credit_fields_with_legacy_rows(self) -> None:
+        session_id = "aiu-session-storage"
+        session_dir = self.session_state_dir / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "type": "session.shutdown",
+            "timestamp": "2026-06-09T12:01:00.000Z",
+            "data": {
+                "shutdownType": "routine",
+                "totalPremiumRequests": 1.2,
+                "totalNanoAiu": 19870488000,
+                "tokenDetails": {
+                    "input": {"tokenCount": 148364},
+                    "cache_read": {"tokenCount": 723456},
+                    "output": {"tokenCount": 12278},
+                },
+                "totalApiDurationMs": 1000,
+                "sessionStartTime": 1772920800000,
+                "codeChanges": {
+                    "linesAdded": 0,
+                    "linesRemoved": 0,
+                    "filesModified": [],
+                },
+                "modelMetrics": {
+                    "gpt-5.4-mini": {
+                        "requests": {"count": 2, "cost": 1.2},
+                        "usage": {
+                            "inputTokens": 871820,
+                            "outputTokens": 12278,
+                            "cacheReadTokens": 723456,
+                            "cacheWriteTokens": 0,
+                        },
+                        "totalNanoAiu": 19870488000,
+                        "tokenDetails": {
+                            "input": {"tokenCount": 148364},
+                            "cache_read": {"tokenCount": 723456},
+                            "output": {"tokenCount": 12278},
+                        },
+                    }
+                },
+                "currentModel": "gpt-5.4-mini",
+            },
+        }
+        (session_dir / "events.jsonl").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        sync_sessions(self.copilot_home, self.data_dir, regenerate_dashboard=False, sources={"cli"})
+
+        with sqlite3.connect(self.data_dir / "token-tracker.db") as connection:
+            connection.row_factory = sqlite3.Row
+            new_row = connection.execute(
+                """
+                SELECT session_id, total_nano_aiu, total_ai_credits, billed_input_tokens,
+                       billed_output_tokens, billed_cache_read_tokens
+                FROM sessions
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            assert new_row is not None
+            self.assertEqual(new_row["total_nano_aiu"], 19870488000)
+            self.assertAlmostEqual(new_row["total_ai_credits"], 19.870488)
+            self.assertEqual(new_row["billed_input_tokens"], 148364)
+            self.assertEqual(new_row["billed_output_tokens"], 12278)
+            self.assertEqual(new_row["billed_cache_read_tokens"], 723456)
+
+            legacy_row = connection.execute(
+                """
+                SELECT session_id, total_nano_aiu, total_ai_credits, billed_input_tokens
+                FROM sessions
+                WHERE session_id = 'fixture-session-1'
+                """
+            ).fetchone()
+            assert legacy_row is not None
+            self.assertIsNone(legacy_row["total_nano_aiu"])
+            self.assertIsNone(legacy_row["total_ai_credits"])
+            self.assertIsNone(legacy_row["billed_input_tokens"])
+
+            summary = connection.execute(
+                "SELECT COALESCE(SUM(total_ai_credits), 0) AS credits FROM sessions"
+            ).fetchone()
+            assert summary is not None
+            self.assertAlmostEqual(summary["credits"], 19.870488)
+
 
 class VSCodeImporterTests(unittest.TestCase):
     def setUp(self) -> None:
