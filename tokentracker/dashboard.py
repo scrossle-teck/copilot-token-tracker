@@ -8,6 +8,7 @@ import re
 from sqlite3 import Connection, Row
 
 from tokentracker.pricing import (
+  ai_credit_rate,
     describe_cost_strategy,
     estimate_model_row_currency_amount,
     estimate_total_currency_amount,
@@ -493,8 +494,11 @@ def _describe_model_pricing(model_name: str, pricing: dict[str, object], currenc
                 f"Cache write {_format_rate(float(model_rates.get('cacheWriteCostPer1M') or 0.0), currency)} / 1M tokens"
             )
     rate = premium_request_rate(pricing)
+    ai_rate = ai_credit_rate(pricing)
+    if ai_rate is not None:
+      return f"AI credit fallback {_format_rate(ai_rate, currency)} per credit"
     if rate is not None:
-        return f"Premium fallback {_format_rate(rate, currency)} per unit"
+      return f"Legacy premium fallback {_format_rate(rate, currency)} per unit"
     return "Not configured"
 
 
