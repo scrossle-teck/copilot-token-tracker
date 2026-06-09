@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from tokentracker.models import ModelMetrics, SessionMetrics
+from tokentracker.models import ModelMetrics, NANO_AIU_PER_CREDIT, SessionMetrics
 
 
 def discover_session_files(copilot_home: Path) -> list[Path]:
@@ -57,6 +57,11 @@ def parse_completed_session(path: Path) -> SessionMetrics | None:
                 output_tokens=_as_int(usage.get("outputTokens")),
                 cache_read_tokens=_as_int(usage.get("cacheReadTokens")),
                 cache_write_tokens=_as_int(usage.get("cacheWriteTokens")),
+                total_nano_aiu=_as_int_or_none(metrics.get("totalNanoAiu")),
+                ai_credits=_nano_aiu_to_credits(metrics.get("totalNanoAiu")),
+                billed_input_tokens=_token_details_count(metrics.get("tokenDetails"), "input"),
+                billed_output_tokens=_token_details_count(metrics.get("tokenDetails"), "output"),
+                billed_cache_read_tokens=_token_details_count(metrics.get("tokenDetails"), "cache_read"),
             )
         )
 
@@ -88,6 +93,11 @@ def parse_completed_session(path: Path) -> SessionMetrics | None:
         models=models,
         raw_start_json=json.dumps(start_event, sort_keys=True) if start_event else None,
         raw_shutdown_json=json.dumps(shutdown_event, sort_keys=True),
+        total_nano_aiu=_as_int_or_none(shutdown_data.get("totalNanoAiu")),
+        total_ai_credits=_nano_aiu_to_credits(shutdown_data.get("totalNanoAiu")),
+        billed_input_tokens=_token_details_count(shutdown_data.get("tokenDetails"), "input"),
+        billed_output_tokens=_token_details_count(shutdown_data.get("tokenDetails"), "output"),
+        billed_cache_read_tokens=_token_details_count(shutdown_data.get("tokenDetails"), "cache_read"),
     )
 
 
@@ -156,6 +166,26 @@ def _as_float(value: object) -> float:
         return float(value) if value is not None else 0.0
     except (TypeError, ValueError):
         return 0.0
+
+
+def _as_int_or_none(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _nano_aiu_to_credits(value: object) -> float | None:
+    raw = _as_int_or_none(value)
+    if raw is None:
+        return None
+    return raw / float(NANO_AIU_PER_CREDIT)
+
+
+def _token_details_count(token_details: object, bucket: str) -> int | None:
+    details = _as_dict(token_details)
+    entry = _as_dict(details.get(bucket))
+    return _as_int_or_none(entry.get("tokenCount"))
 
 
 def _as_optional_str(value: object) -> str | None:
