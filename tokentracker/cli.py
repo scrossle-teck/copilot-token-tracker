@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import sys
 import webbrowser
@@ -55,12 +56,14 @@ def _build_parser() -> argparse.ArgumentParser:
     summary_parser = subparsers.add_parser("summary", help="Print an aggregated summary.")
     _add_common_paths(summary_parser)
     _add_scope_filter(summary_parser)
+    _add_period_filter(summary_parser)
     _add_sources_flag(summary_parser)
     summary_parser.set_defaults(handler=handle_summary)
 
     dashboard_parser = subparsers.add_parser("dashboard", help="Regenerate the HTML dashboard.")
     _add_common_paths(dashboard_parser)
     _add_scope_filter(dashboard_parser)
+    _add_period_filter(dashboard_parser)
     _add_sources_flag(dashboard_parser)
     dashboard_parser.add_argument("--open", action="store_true", help="Open the generated dashboard in the default browser.")
     dashboard_parser.set_defaults(handler=handle_dashboard)
@@ -111,6 +114,48 @@ def _add_scope_filter(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _parse_month_value(raw: str) -> str:
+    try:
+        parsed = datetime.strptime(raw, "%Y-%m")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Month must be in YYYY-MM format.") from exc
+    return parsed.strftime("%Y-%m")
+
+
+def _add_period_filter(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--current-month",
+        action="store_true",
+        help="Filter output to the current UTC calendar month.",
+    )
+    group.add_argument(
+        "--month",
+        type=_parse_month_value,
+        default=None,
+        help="Filter output to a specific month in YYYY-MM format.",
+    )
+
+
+def _month_bounds(month_value: str) -> tuple[str, str]:
+    month_start = datetime.strptime(month_value, "%Y-%m").replace(day=1)
+    if month_start.month == 12:
+        month_end = month_start.replace(year=month_start.year + 1, month=1)
+    else:
+        month_end = month_start.replace(month=month_start.month + 1)
+    return month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")
+
+
+def _resolve_period_filter(args: argparse.Namespace) -> tuple[str | None, str | None, str | None]:
+    month_value = getattr(args, "month", None)
+    if month_value is None and bool(getattr(args, "current_month", False)):
+        month_value = datetime.now(timezone.utc).strftime("%Y-%m")
+    if month_value is None:
+        return None, None, None
+    period_start, period_end = _month_bounds(month_value)
+    return month_value, period_start, period_end
+
+
 _ALL_SOURCES = ("cli", "vscode")
 
 
@@ -143,19 +188,22 @@ def handle_sync(args: argparse.Namespace) -> int:
 def handle_summary(args: argparse.Namespace) -> int:
     data_dir = _data_dir_for(args.copilot_home, args.data_dir)
     scope = getattr(args, "scope", None)
+    period_label, period_start, period_end = _resolve_period_filter(args)
     sources = _parse_sources(getattr(args, "sources", ",".join(_ALL_SOURCES)))
     result = sync_sessions(copilot_home=args.copilot_home, data_dir=data_dir, regenerate_dashboard=True, sources=sources)
     pricing = load_pricing(data_dir)
     _print_sync_result(result, heading="Sync summary")
     with connect(result.database_path) as connection:
-        summary = fetch_summary(connection, scope=scope)
-        model_rows = fetch_model_breakdown(connection, scope=scope)
-        source_rows = fetch_source_breakdown(connection, scope=scope)
+        summary = fetch_summary(connection, scope=scope, period_start=period_start, period_end=period_end)
+        model_rows = fetch_model_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
+        source_rows = fetch_source_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
     estimated_cost = estimate_total_currency_amount(model_rows, pricing)
     print()
     print("Totals")
     if scope:
         print(f"  Scope: {scope}")
+    if period_label:
+        print(f"  Month: {period_label}")
     print(f"  Sessions: {_format_int(summary['session_count'])}")
     print(f"  Requests: {_format_int(summary['total_requests'])}")
     print(f"  Tokens: {_format_int(summary['total_tokens'])}")
@@ -182,10 +230,22 @@ def handle_summary(args: argparse.Namespace) -> int:
 def handle_dashboard(args: argparse.Namespace) -> int:
     data_dir = _data_dir_for(args.copilot_home, args.data_dir)
     scope = getattr(args, "scope", None)
+    period_label, period_start, period_end = _resolve_period_filter(args)
     sources = _parse_sources(getattr(args, "sources", ",".join(_ALL_SOURCES)))
     result = sync_sessions(copilot_home=args.copilot_home, data_dir=data_dir, regenerate_dashboard=True, sources=sources)
     if result.dashboard_path is None:
         raise RuntimeError("Dashboard path was not generated.")
+    if period_start is not None and period_end is not None:
+        pricing = load_pricing(data_dir)
+        with connect(result.database_path) as connection:
+            render_dashboard(
+                connection,
+                result.dashboard_path,
+                pricing,
+                period_start=period_start,
+                period_end=period_end,
+                period_label=period_label,
+            )
     dashboard_path = result.dashboard_path
     if scope is not None:
         dashboard_path = project_dashboard_path(result.dashboard_path, scope)
