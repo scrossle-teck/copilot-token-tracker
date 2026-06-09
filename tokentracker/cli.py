@@ -19,6 +19,7 @@ from tokentracker.pricing import (
     pricing_currency,
 )
 from tokentracker.storage import (
+    fetch_billing_mix,
     connect,
     existing_session_mtimes,
     fetch_model_breakdown,
@@ -197,6 +198,7 @@ def handle_summary(args: argparse.Namespace) -> int:
         summary = fetch_summary(connection, scope=scope, period_start=period_start, period_end=period_end)
         model_rows = fetch_model_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
         source_rows = fetch_source_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
+        billing_mix = fetch_billing_mix(connection, scope=scope, period_start=period_start, period_end=period_end)
     estimated_cost = estimate_total_currency_amount(model_rows, pricing)
     print()
     print("Totals")
@@ -211,7 +213,9 @@ def handle_summary(args: argparse.Namespace) -> int:
     print(f"    Output: {_format_int(summary['total_output_tokens'])}")
     print(f"    Cache read: {_format_int(summary['total_cache_read_tokens'])}")
     print(f"    Cache write: {_format_int(summary['total_cache_write_tokens'])}")
-    print(f"  Premium request units: {_format_decimal(summary['total_premium_requests'])}")
+    print(f"  AI credits: {_format_decimal(summary['total_ai_credits'])}")
+    if int(billing_mix["legacy_premium_sessions"] or 0) > 0:
+        print(f"  Legacy premium request units: {_format_decimal(summary['total_premium_requests'])}")
     print(f"  Estimated cost ({pricing_currency(pricing)}): {_format_currency(estimated_cost, pricing_currency(pricing))}")
     print(f"  Cost mode: {describe_cost_strategy(pricing)}")
     print(f"  Session duration: {_format_duration(summary['duration_seconds'])}")
@@ -220,8 +224,10 @@ def handle_summary(args: argparse.Namespace) -> int:
         print("  By source:")
         for srow in source_rows:
             label = _source_label(str(srow["source"]))
-            est_note = " (estimated)" if int(srow["estimated_count"]) > 0 else ""
-            print(f"    {label}: {_format_int(srow['session_count'])} sessions, {_format_int(srow['total_tokens'])} tokens{est_note}")
+            estimated_count = int(srow["estimated_count"] or 0)
+            actual_count = int(srow["session_count"]) - estimated_count
+            mode_note = f" (actual: {actual_count}, estimated: {estimated_count})"
+            print(f"    {label}: {_format_int(srow['session_count'])} sessions, {_format_int(srow['total_tokens'])} tokens{mode_note}")
     if result.dashboard_path is not None:
         print(f"  Dashboard: {result.dashboard_path}")
     return 0
