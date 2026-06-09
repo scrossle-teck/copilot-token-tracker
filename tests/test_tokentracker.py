@@ -991,6 +991,67 @@ class VSCodeImporterTests(unittest.TestCase):
         self.assertEqual(len(session.models), 1)
         self.assertEqual(session.models[0].model_name, "claude-sonnet-4.5")
 
+    def test_parse_vscode_sessions_estimates_ai_credits_from_model_metadata(self) -> None:
+        from tokentracker.vscode_importer import parse_vscode_sessions
+
+        db_path = self._create_mock_vscode_db(
+            history_entries=[
+                {
+                    "inputText": "A" * 100,
+                    "selectedModel": {
+                        "identifier": "copilot/gpt-5.3-codex",
+                        "metadata": {
+                            "id": "gpt-5.3-codex",
+                            "name": "GPT-5.3-Codex",
+                            "inputCost": 175,
+                            "outputCost": 1400,
+                            "cacheCost": 17,
+                        },
+                    },
+                }
+            ]
+        )
+        sessions = list(parse_vscode_sessions(db_path))
+
+        self.assertEqual(len(sessions), 1)
+        session = sessions[0]
+        self.assertIsNotNone(session.total_ai_credits)
+        assert session.total_ai_credits is not None
+        self.assertGreater(session.total_ai_credits, 0)
+        self.assertIsNotNone(session.total_nano_aiu)
+
+        model = session.models[0]
+        self.assertIsNotNone(model.ai_credits)
+        assert model.ai_credits is not None
+        self.assertAlmostEqual(model.ai_credits, session.total_ai_credits)
+        self.assertIsNotNone(model.total_nano_aiu)
+
+    def test_parse_vscode_sessions_keeps_ai_credits_none_without_pricing_metadata(self) -> None:
+        from tokentracker.vscode_importer import parse_vscode_sessions
+
+        db_path = self._create_mock_vscode_db(
+            history_entries=[
+                {
+                    "inputText": "A" * 100,
+                    "selectedModel": {
+                        "identifier": "copilot/gpt-5.3-codex",
+                        "metadata": {
+                            "id": "gpt-5.3-codex",
+                            "name": "GPT-5.3-Codex",
+                        },
+                    },
+                }
+            ]
+        )
+        sessions = list(parse_vscode_sessions(db_path))
+
+        self.assertEqual(len(sessions), 1)
+        session = sessions[0]
+        self.assertIsNone(session.total_ai_credits)
+        self.assertIsNone(session.total_nano_aiu)
+        self.assertIsNone(session.models[0].ai_credits)
+        self.assertIsNone(session.models[0].total_nano_aiu)
+
     def test_parse_vscode_sessions_skips_empty_sessions(self) -> None:
         from tokentracker.vscode_importer import parse_vscode_sessions
 

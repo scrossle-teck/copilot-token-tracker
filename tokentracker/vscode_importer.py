@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from tokentracker.models import ModelMetrics, SessionMetrics
+from tokentracker.models import ModelMetrics, NANO_AIU_PER_CREDIT, SessionMetrics
 
 # Approximate tokens per character for English text.
 # GPT/Claude tokenizers average ~0.25 tokens per character for typical prose.
@@ -81,7 +81,7 @@ def _extract_sessions(
 
     # Extract model name and total estimated tokens from the full history,
     # then distribute proportionally across sessions.
-    model_name, total_tokens = _extract_model_and_tokens(all_history)
+    model_name, pricing_rates, total_tokens = _extract_model_and_tokens(all_history)
     session_count = len(non_empty)
     per_session_input = total_tokens["input"] // max(session_count, 1)
     per_session_output = total_tokens["output"] // max(session_count, 1)
@@ -97,6 +97,7 @@ def _extract_sessions(
             estimated_input=per_session_input,
             estimated_output=per_session_output,
             request_count=per_session_requests,
+            pricing_rates=pricing_rates,
             db_path=db_path,
             mtime_ns=mtime_ns,
         )
@@ -111,6 +112,7 @@ def _build_session(
     estimated_input: int,
     estimated_output: int,
     request_count: int,
+    pricing_rates: dict[str, float] | None,
     db_path: Path,
     mtime_ns: int,
 ) -> SessionMetrics | None:
@@ -145,6 +147,13 @@ def _build_session(
 
     total_tokens = estimated_input + estimated_output
 
+    model_ai_credits = _estimate_ai_credits(
+        input_tokens=estimated_input,
+        output_tokens=estimated_output,
+        cache_read_tokens=0,
+        pricing_rates=pricing_rates,
+    )
+
     models: list[ModelMetrics] = []
     if model_name and total_tokens > 0:
         models.append(
@@ -156,6 +165,8 @@ def _build_session(
                 output_tokens=estimated_output,
                 cache_read_tokens=0,
                 cache_write_tokens=0,
+                ai_credits=model_ai_credits,
+                total_nano_aiu=_credits_to_nano_aiu(model_ai_credits),
             )
         )
 
@@ -184,14 +195,17 @@ def _build_session(
         raw_shutdown_json=json.dumps({"title": title, "location": location}, sort_keys=True),
         source=_SOURCE,
         is_estimated=True,
+        total_ai_credits=model_ai_credits,
+        total_nano_aiu=_credits_to_nano_aiu(model_ai_credits),
     )
 
 
 def _extract_model_and_tokens(
     history_entries: list[dict[str, object]],
-) -> tuple[str | None, dict[str, int]]:
+) -> tuple[str | None, dict[str, float] | None, dict[str, int]]:
     """Extract the primary model and estimate token counts from chat history entries."""
     model_name: str | None = None
+    pricing_rates: dict[str, float] | None = None
     total_input_chars = 0
     request_count = 0
 
@@ -213,16 +227,58 @@ def _extract_model_and_tokens(
                     model_name = meta.get("id") or meta.get("name")
                     if model_name:
                         model_name = str(model_name)
+                    pricing_rates = _extract_pricing_rates(meta)
 
     estimated_input = int(total_input_chars * TOKENS_PER_CHAR)
     # Estimate output as ~2× input (models typically respond with more text)
     estimated_output = int(estimated_input * 2)
 
-    return model_name, {
+    return model_name, pricing_rates, {
         "input": estimated_input,
         "output": estimated_output,
         "request_count": request_count,
     }
+
+
+def _extract_pricing_rates(metadata: dict[str, object]) -> dict[str, float] | None:
+    input_cost = _as_float_or_none(metadata.get("inputCost"))
+    output_cost = _as_float_or_none(metadata.get("outputCost"))
+    cache_cost = _as_float_or_none(metadata.get("cacheCost"))
+    if input_cost is None or output_cost is None:
+        return None
+    return {
+        "input_per_1m_ai_credits": input_cost,
+        "output_per_1m_ai_credits": output_cost,
+        "cache_read_per_1m_ai_credits": 0.0 if cache_cost is None else cache_cost,
+    }
+
+
+def _estimate_ai_credits(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    pricing_rates: dict[str, float] | None,
+) -> float | None:
+    if pricing_rates is None:
+        return None
+    return (
+        (input_tokens / 1_000_000.0) * pricing_rates["input_per_1m_ai_credits"]
+        + (output_tokens / 1_000_000.0) * pricing_rates["output_per_1m_ai_credits"]
+        + (cache_read_tokens / 1_000_000.0) * pricing_rates["cache_read_per_1m_ai_credits"]
+    )
+
+
+def _credits_to_nano_aiu(credits: float | None) -> int | None:
+    if credits is None:
+        return None
+    return int(round(credits * NANO_AIU_PER_CREDIT))
+
+
+def _as_float_or_none(value: object) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _collect_all_history_entries(
