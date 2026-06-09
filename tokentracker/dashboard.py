@@ -30,8 +30,15 @@ def project_dashboard_path(output_path: Path, scope: str) -> Path:
     return output_path.parent / "projects" / f"{_scope_slug(scope)}.html"
 
 
-def render_dashboard(connection: Connection, output_path: Path, pricing: dict[str, object]) -> Path:
-    repo_rows = fetch_repo_breakdown(connection)
+def render_dashboard(
+    connection: Connection,
+    output_path: Path,
+    pricing: dict[str, object],
+    period_start: str | None = None,
+    period_end: str | None = None,
+    period_label: str | None = None,
+) -> Path:
+    repo_rows = fetch_repo_breakdown(connection, period_start=period_start, period_end=period_end)
     project_links = {
         str(row["scope"]): f"projects/{project_dashboard_path(output_path, str(row['scope'])).name}"
         for row in repo_rows
@@ -43,6 +50,9 @@ def render_dashboard(connection: Connection, output_path: Path, pricing: dict[st
             connection,
             pricing=pricing,
             scope=None,
+            period_start=period_start,
+            period_end=period_end,
+            period_label=period_label,
             project_links=project_links,
             overview_href=None,
         ),
@@ -59,6 +69,9 @@ def render_dashboard(connection: Connection, output_path: Path, pricing: dict[st
                 connection,
                 pricing=pricing,
                 scope=scope,
+                period_start=period_start,
+                period_end=period_end,
+                period_label=period_label,
                 project_links=None,
                 overview_href=f"../{output_path.name}",
             ),
@@ -71,16 +84,19 @@ def _render_dashboard_html(
     connection: Connection,
     pricing: dict[str, object],
     scope: str | None,
+    period_start: str | None,
+    period_end: str | None,
+    period_label: str | None,
     project_links: dict[str, str] | None,
     overview_href: str | None,
 ) -> str:
-    summary = fetch_summary(connection, scope=scope)
-    model_rows = fetch_model_breakdown(connection, scope=scope)
-    repo_rows = fetch_repo_breakdown(connection, scope=scope)
-    daily_rows = fetch_daily_breakdown(connection, scope=scope)
-    recent_rows = fetch_recent_sessions(connection, scope=scope)
-    cost_rows = fetch_session_cost_rows(connection, scope=scope)
-    source_rows = fetch_source_breakdown(connection, scope=scope)
+    summary = fetch_summary(connection, scope=scope, period_start=period_start, period_end=period_end)
+    model_rows = fetch_model_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
+    repo_rows = fetch_repo_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
+    daily_rows = fetch_daily_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
+    recent_rows = fetch_recent_sessions(connection, scope=scope, period_start=period_start, period_end=period_end)
+    cost_rows = fetch_session_cost_rows(connection, scope=scope, period_start=period_start, period_end=period_end)
+    source_rows = fetch_source_breakdown(connection, scope=scope, period_start=period_start, period_end=period_end)
 
     currency = pricing_currency(pricing)
     cost_strategy = describe_cost_strategy(pricing)
@@ -99,6 +115,7 @@ def _render_dashboard_html(
         if overview_href is None
         else f'<p class="meta"><a href="{escape(overview_href)}">Back to overview</a></p>'
     )
+    period_notice = "" if period_label is None else f'<p class="meta">Month filter: <code>{escape(period_label)}</code></p>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -236,6 +253,7 @@ def _render_dashboard_html(
       <h1>{escape(page_title)}</h1>
       <p>Aggregated from Copilot CLI sessions and VS Code Chat sessions.</p>
       {scope_notice}
+      {period_notice}
       {overview_link}
       <p class="meta">Generated {escape(_now_iso())}</p>
     </header>

@@ -12,10 +12,31 @@ def _scope_expression(alias: str | None = None) -> str:
     return f"COALESCE({prefix}repository, {prefix}git_root, {prefix}cwd, '<unknown>')"
 
 
-def _scope_filter(scope: str | None, alias: str | None = None) -> tuple[str, tuple[str, ...]]:
-    if scope is None:
+def _session_time_expression(alias: str | None = None) -> str:
+    prefix = f"{alias}." if alias else ""
+    return f"COALESCE({prefix}started_at, {prefix}shutdown_at)"
+
+
+def _query_filter(
+    scope: str | None,
+    period_start: str | None,
+    period_end: str | None,
+    alias: str | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    clauses: list[str] = []
+    params: list[str] = []
+    if scope is not None:
+        clauses.append(f"{_scope_expression(alias)} = ?")
+        params.append(scope)
+    if period_start is not None:
+        clauses.append(f"{_session_time_expression(alias)} >= ?")
+        params.append(period_start)
+    if period_end is not None:
+        clauses.append(f"{_session_time_expression(alias)} < ?")
+        params.append(period_end)
+    if not clauses:
         return "", ()
-    return f"WHERE {_scope_expression(alias)} = ?", (scope,)
+    return f"WHERE {' AND '.join(clauses)}", tuple(params)
 
 
 def connect(database_path: Path) -> sqlite3.Connection:
@@ -246,8 +267,13 @@ def upsert_session(connection: sqlite3.Connection, session: SessionMetrics) -> s
     return "updated" if exists else "inserted"
 
 
-def fetch_summary(connection: sqlite3.Connection, scope: str | None = None) -> sqlite3.Row:
-    where_clause, params = _scope_filter(scope)
+def fetch_summary(
+    connection: sqlite3.Connection,
+    scope: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> sqlite3.Row:
+    where_clause, params = _query_filter(scope, period_start, period_end)
     return connection.execute(
         f"""
         SELECT
@@ -269,8 +295,13 @@ def fetch_summary(connection: sqlite3.Connection, scope: str | None = None) -> s
     ).fetchone()
 
 
-def fetch_model_breakdown(connection: sqlite3.Connection, scope: str | None = None) -> list[sqlite3.Row]:
-    where_clause, params = _scope_filter(scope, "s")
+def fetch_model_breakdown(
+    connection: sqlite3.Connection,
+    scope: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> list[sqlite3.Row]:
+    where_clause, params = _query_filter(scope, period_start, period_end, "s")
     return connection.execute(
         f"""
         SELECT
@@ -293,8 +324,13 @@ def fetch_model_breakdown(connection: sqlite3.Connection, scope: str | None = No
     ).fetchall()
 
 
-def fetch_repo_breakdown(connection: sqlite3.Connection, scope: str | None = None) -> list[sqlite3.Row]:
-    where_clause, params = _scope_filter(scope)
+def fetch_repo_breakdown(
+    connection: sqlite3.Connection,
+    scope: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> list[sqlite3.Row]:
+    where_clause, params = _query_filter(scope, period_start, period_end)
     scope_expression = _scope_expression()
     return connection.execute(
         f"""
@@ -316,8 +352,13 @@ def fetch_repo_breakdown(connection: sqlite3.Connection, scope: str | None = Non
     ).fetchall()
 
 
-def fetch_daily_breakdown(connection: sqlite3.Connection, scope: str | None = None) -> list[sqlite3.Row]:
-    where_clause, params = _scope_filter(scope)
+def fetch_daily_breakdown(
+    connection: sqlite3.Connection,
+    scope: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> list[sqlite3.Row]:
+    where_clause, params = _query_filter(scope, period_start, period_end)
     return connection.execute(
         f"""
         SELECT
@@ -340,8 +381,10 @@ def fetch_recent_sessions(
     connection: sqlite3.Connection,
     limit: int = 25,
     scope: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
 ) -> list[sqlite3.Row]:
-    where_clause, params = _scope_filter(scope)
+    where_clause, params = _query_filter(scope, period_start, period_end)
     scope_expression = _scope_expression()
     return connection.execute(
         f"""
@@ -368,8 +411,13 @@ def fetch_recent_sessions(
     ).fetchall()
 
 
-def fetch_session_cost_rows(connection: sqlite3.Connection, scope: str | None = None) -> list[sqlite3.Row]:
-    where_clause, params = _scope_filter(scope, "s")
+def fetch_session_cost_rows(
+    connection: sqlite3.Connection,
+    scope: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> list[sqlite3.Row]:
+    where_clause, params = _query_filter(scope, period_start, period_end, "s")
     scope_expression = _scope_expression("s")
     return connection.execute(
         f"""
@@ -395,8 +443,13 @@ def fetch_session_cost_rows(connection: sqlite3.Connection, scope: str | None = 
     ).fetchall()
 
 
-def fetch_source_breakdown(connection: sqlite3.Connection, scope: str | None = None) -> list[sqlite3.Row]:
-    where_clause, params = _scope_filter(scope)
+def fetch_source_breakdown(
+    connection: sqlite3.Connection,
+    scope: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> list[sqlite3.Row]:
+    where_clause, params = _query_filter(scope, period_start, period_end)
     return connection.execute(
         f"""
         SELECT

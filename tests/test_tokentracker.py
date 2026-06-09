@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 
@@ -46,9 +47,13 @@ class TokenTrackerTests(unittest.TestCase):
         session_id: str,
         repository: str,
         model_name: str = "claude-haiku-4.5",
+        started_at: str = "2026-03-07T22:00:00.000Z",
+        shutdown_at: str = "2026-03-07T22:01:00.000Z",
     ) -> None:
         session_dir = self.session_state_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
+        start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+        start_ms = int(start_dt.timestamp() * 1000)
         (session_dir / "events.jsonl").write_text(
             "\n".join(
                 [
@@ -60,7 +65,7 @@ class TokenTrackerTests(unittest.TestCase):
                                 "version": 1,
                                 "producer": "copilot-agent",
                                 "copilotVersion": "1.0.2",
-                                "startTime": "2026-03-07T22:00:00.000Z",
+                                "startTime": started_at,
                                 "selectedModel": model_name,
                                 "context": {
                                     "cwd": "C:\\Projects\\Deep\\Nested\\Example\\Workspace\\With\\Long\\Paths",
@@ -70,7 +75,7 @@ class TokenTrackerTests(unittest.TestCase):
                                 },
                             },
                             "id": f"start-{session_id}",
-                            "timestamp": "2026-03-07T22:00:00.010Z",
+                            "timestamp": started_at,
                             "parentId": None,
                         }
                     ),
@@ -81,7 +86,7 @@ class TokenTrackerTests(unittest.TestCase):
                                 "shutdownType": "routine",
                                 "totalPremiumRequests": 0.33,
                                 "totalApiDurationMs": 1000,
-                                "sessionStartTime": 1772920800000,
+                                "sessionStartTime": start_ms,
                                 "codeChanges": {
                                     "linesAdded": 1,
                                     "linesRemoved": 0,
@@ -101,7 +106,7 @@ class TokenTrackerTests(unittest.TestCase):
                                 "currentModel": model_name,
                             },
                             "id": f"shutdown-{session_id}",
-                            "timestamp": "2026-03-07T22:01:00.000Z",
+                            "timestamp": shutdown_at,
                             "parentId": f"start-{session_id}",
                         }
                     ),
@@ -413,6 +418,37 @@ class TokenTrackerTests(unittest.TestCase):
         self.assertIn("Scope: octo/demo", output)
         self.assertIn("Sessions: 1", output)
         self.assertIn("Tokens: 1,610", output)
+
+    def test_summary_can_filter_to_specific_month(self) -> None:
+        self._write_completed_session(
+            "fixture-session-april",
+            "octo/april-project",
+            started_at="2026-04-01T00:00:00.000Z",
+            shutdown_at="2026-04-01T00:01:00.000Z",
+        )
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            exit_code = handle_summary(
+                type(
+                    "Args",
+                    (),
+                    {
+                        "copilot_home": self.copilot_home,
+                        "data_dir": self.data_dir,
+                        "scope": None,
+                        "sources": "cli",
+                        "month": "2026-04",
+                        "current_month": False,
+                    },
+                )()
+            )
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("Month: 2026-04", output)
+        self.assertIn("Sessions: 1", output)
+        self.assertIn("Tokens: 120", output)
 
 
 class VSCodeImporterTests(unittest.TestCase):

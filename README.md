@@ -126,6 +126,13 @@ To filter to one repository, git root, or cwd scope:
 tokentracker summary --scope "octo/demo"
 ```
 
+To filter to a month:
+
+```powershell
+tokentracker summary --current-month
+tokentracker summary --month 2026-06
+```
+
 ### Generate or open the HTML dashboard
 
 ```powershell
@@ -136,6 +143,13 @@ The global dashboard also generates per-project pages under `projects\`. You can
 
 ```powershell
 tokentracker dashboard --scope "octo/demo" --open
+```
+
+Month filtering is also available for dashboard generation:
+
+```powershell
+tokentracker dashboard --current-month --open
+tokentracker dashboard --month 2026-06 --open
 ```
 
 ### Install personal hooks
