@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 
+from tokentracker.importer import parse_completed_session
 from tokentracker import __version__
 from tokentracker.cli import handle_doctor, handle_summary, main, sync_sessions
 from tokentracker.dashboard import project_dashboard_path
@@ -449,6 +450,77 @@ class TokenTrackerTests(unittest.TestCase):
         self.assertIn("Month: 2026-04", output)
         self.assertIn("Sessions: 1", output)
         self.assertIn("Tokens: 120", output)
+
+    def test_importer_parses_nano_aiu_and_billing_token_details(self) -> None:
+        session_id = "aiu-session"
+        session_dir = self.session_state_dir / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "type": "session.shutdown",
+            "timestamp": "2026-06-09T12:01:00.000Z",
+            "data": {
+                "shutdownType": "routine",
+                "totalPremiumRequests": 1.2,
+                "totalNanoAiu": 19870488000,
+                "tokenDetails": {
+                    "input": {"tokenCount": 148364},
+                    "cache_read": {"tokenCount": 723456},
+                    "output": {"tokenCount": 12278},
+                },
+                "totalApiDurationMs": 1000,
+                "sessionStartTime": 1772920800000,
+                "codeChanges": {
+                    "linesAdded": 0,
+                    "linesRemoved": 0,
+                    "filesModified": [],
+                },
+                "modelMetrics": {
+                    "gpt-5.4-mini": {
+                        "requests": {"count": 2, "cost": 1.2},
+                        "usage": {
+                            "inputTokens": 871820,
+                            "outputTokens": 12278,
+                            "cacheReadTokens": 723456,
+                            "cacheWriteTokens": 0,
+                        },
+                        "totalNanoAiu": 19870488000,
+                        "tokenDetails": {
+                            "input": {"tokenCount": 148364},
+                            "cache_read": {"tokenCount": 723456},
+                            "output": {"tokenCount": 12278},
+                        },
+                    }
+                },
+                "currentModel": "gpt-5.4-mini",
+            },
+        }
+        (session_dir / "events.jsonl").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        session = parse_completed_session(session_dir / "events.jsonl")
+        assert session is not None
+        self.assertEqual(session.total_nano_aiu, 19870488000)
+        assert session.total_ai_credits is not None
+        self.assertAlmostEqual(session.total_ai_credits, 19.870488)
+        self.assertEqual(session.billed_input_tokens, 148364)
+        self.assertEqual(session.billed_cache_read_tokens, 723456)
+        self.assertEqual(session.billed_output_tokens, 12278)
+
+        model = session.models[0]
+        self.assertEqual(model.total_nano_aiu, 19870488000)
+        assert model.ai_credits is not None
+        self.assertAlmostEqual(model.ai_credits, 19.870488)
+        self.assertEqual(model.billed_input_tokens, 148364)
+        self.assertEqual(model.billed_cache_read_tokens, 723456)
+        self.assertEqual(model.billed_output_tokens, 12278)
+
+    def test_importer_handles_missing_nano_aiu_fields(self) -> None:
+        session = parse_completed_session(self.session_state_dir / "fixture-session-1" / "events.jsonl")
+        assert session is not None
+        self.assertIsNone(session.total_nano_aiu)
+        self.assertIsNone(session.total_ai_credits)
+        self.assertIsNone(session.billed_input_tokens)
+        self.assertIsNone(session.billed_cache_read_tokens)
+        self.assertIsNone(session.billed_output_tokens)
 
 
 class VSCodeImporterTests(unittest.TestCase):

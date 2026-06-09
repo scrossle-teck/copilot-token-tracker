@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+NANO_AIU_PER_CREDIT = 1_000_000_000
+
+
 @dataclass(slots=True)
 class ModelMetrics:
     model_name: str
@@ -13,6 +16,11 @@ class ModelMetrics:
     output_tokens: int
     cache_read_tokens: int
     cache_write_tokens: int
+    total_nano_aiu: int | None = None
+    ai_credits: float | None = None
+    billed_input_tokens: int | None = None
+    billed_output_tokens: int | None = None
+    billed_cache_read_tokens: int | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -50,6 +58,11 @@ class SessionMetrics:
     raw_shutdown_json: str | None = None
     source: str = "cli"
     is_estimated: bool = False
+    total_nano_aiu: int | None = None
+    total_ai_credits: float | None = None
+    billed_input_tokens: int | None = None
+    billed_output_tokens: int | None = None
+    billed_cache_read_tokens: int | None = None
 
     @property
     def files_modified_count(self) -> int:
